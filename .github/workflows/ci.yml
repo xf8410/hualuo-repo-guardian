@@ -1,0 +1,174 @@
+name: 自检（每次提交都跑）
+
+# 这个 CI 的定位：先证明"没犯错"，再证明"能打包"。
+# 铁规：任何步骤都不许写 continue-on-error —— 旧 Agora 三步全开了这个开关，
+#       结果红被伪装成"跳过"，真正的编译错误又被 tail 截断，等于没有 CI。
+# 失败时必须把完整原因贴进日志和摘要，不许只给一句"失败了"。
+# 检查规则一律写成 [[:space:]] 这种形式，是为了避免"正则匹配到自己这一行"。
+#
+# 记在这儿别再踩的两条：
+#   1) jobs 下面的**键名**不能写中文（写成「自检:」会让 GitHub 解析失败：零 job、
+#      日志全空、run 名字退化成文件路径）。中文只能写在给人看的 name: 里。
+#   2) 触发器不要同时"不限分支 push"+"pull_request"，否则每个提交都跑两遍浪费机器。
+#      现在的口径：往 main 直接提交时跑；开 PR 或 PR 有新提交时跑；
+#      workbench/* 分支只要开了 PR 就有 CI，不再单独跑一遍。
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 自检-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zi-jian:
+    name: 编译 + 测试 + 打包 + 四条红线
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 装 Gradle（本仓不提交包装器二进制，版本在这里写死一次）
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: 确保安卓编译环境可用（缺的组件由构建自动下载）
+        uses: android-actions/setup-android@v3
+
+      - name: 红线一 · 禁止构建时改源码
+        run: |
+          set -uo pipefail
+          echo "为什么查：旧 Agora 的构建会先用 python 重写源码，产物与仓库内容对不上，谁也没法审计。"
+          bad=$(grep -R -n -E 'python3?[[:space:]][^|;]*>+[[:space:]]*[^[:space:]]*\.kt|sed[[:space:]]+-i[^;]*\.kt|git[[:space:]]+push|gh[[:space:]]+api[[:space:]]+(contents|git/refs)' .github/workflows || true)
+          if [ -n "$bad" ]; then
+            echo "发现"构建时改源码"或"CI 自己往仓库推东西"的写法："
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "没有。构建只编译已经提交进来的字节。"
+
+      - name: 红线二 · 禁止把整个文件读进内存
+        run: |
+          set -uo pipefail
+          echo "为什么查：旧 Agora 传大文件闪退的根因就是把整个文件一次性读进内存，几个 G 必然撑爆。"
+          bad=$(grep -R -n -E 'readAllBytes|[[:space:]]readBytes\(\)|toByteArray\(\)' engine app --include='*.kt' --exclude-dir=test || true)
+          if [ -n "$bad" ]; then
+            echo "出现整文件读入内存的写法："
+            printf '%s\n' "$bad"
+            echo "正确做法：用 com.hualuo.engine.io 里的 streamingCopy，一次搬 64 KiB。"
+            exit 1
+          fi
+          echo "没有。正式代码全部走流式。"
+
+      - name: 红线三 · 单文件不许超过 999 行
+        run: |
+          set -uo pipefail
+          echo "为什么查：旧 Agora 有二十多个 20KB 以上的巨型文件（最大 57KB），补丁摞补丁，没人敢动。"
+          over=$(find engine app -type f \( -name '*.kt' -o -name '*.kts' \) -print0 | xargs -0 -r wc -l | awk '$1 > 999 {print}' || true)
+          if [ -n "$over" ]; then
+            echo "以下文件超过 999 行，必须拆开："
+            printf '%s\n' "$over"
+            exit 1
+          fi
+          echo "全部在 999 行以内。"
+
+      - name: 红线四 · 版本号只能有一个来源
+        run: |
+          set -uo pipefail
+          file_version=$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "version.properties 里写的：${file_version:-（空）}"
+          if [ -z "$file_version" ]; then
+            echo "version.properties 没写 versionName。"
+            exit 1
+          fi
+          gradle_version=$(gradle -q :app:printVersion 2>/dev/null | sed -n 's/^versionName=//p' | tr -d '[:space:]')
+          echo "构建实际生效的：${gradle_version:-（没读到）}"
+          if [ -z "$gradle_version" ]; then
+            echo "读不到构建版本号，说明构建脚本本身有问题（不是版本写了两处）。看后面步骤的完整日志。"
+            exit 1
+          fi
+          if [ "$file_version" != "$gradle_version" ]; then
+            echo "两边不一致：有第二处写死了版本号。以后改版本只许动 version.properties。"
+            exit 1
+          fi
+          stray=$(grep -R -n -E 'versionName[[:space:]]*=[[:space:]]*"' app engine --include='*.kt' --include='*.kts' || true)
+          if [ -n "$stray" ]; then
+            echo "源码里还有写死的版本号："
+            printf '%s\n' "$stray"
+            exit 1
+          fi
+          echo "一致：全项目只有 version.properties 一处。"
+
+      - name: 跑引擎测试（纯逻辑，不用手机）
+        run: |
+          set -o pipefail
+          mkdir -p 日志
+          gradle --no-daemon --stacktrace :engine:test 2>&1 | tee 日志/引擎测试.log
+
+      - name: 打安卓包（调试签名，不设任何密钥）
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee 日志/打包.log
+
+      - name: 确认包真的生成了（不是"步骤绿了但没产物"）
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$apk"
+          test -s "$apk"
+          sha256sum "$apk" | tee 日志/安装包.sha256
+          cp "$apk" 日志/Hualuo-debug.apk
+          echo "包：$apk，大小 $(stat -c%s "$apk") 字节"
+
+      - name: 出错了就贴完整原因（不许 tail 截断）
+        if: failure()
+        run: |
+          set -uo pipefail
+          {
+            echo "# 失败现场"
+            found=0
+            for f in 日志/*.log; do
+              [ -f "$f" ] || continue
+              found=1
+              size=$(wc -c < "$f")
+              echo
+              echo "## $f（共 ${size} 字节）"
+              echo '```'
+              if [ "$size" -gt 60000 ]; then
+                head -c 20000 "$f"
+                echo
+                echo "……（中间省略 $(( size - 40000 )) 字节，完整内容在本 CI 产物 日志/ 里）……"
+                echo
+                tail -c 20000 "$f"
+              else
+                cat "$f"
+              fi
+              echo '```'
+            done
+            if [ "$found" -eq 0 ]; then
+              echo "没有任何构建日志，说明挂在红线检查或环境安装阶段——请把上面失败的步骤名和它的日志发我。"
+            fi
+          } | tee "$GITHUB_STEP_SUMMARY"
+
+      - name: 收日志（成功也留，方便回看这次到底改了什么）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 自检日志-${{ github.run_id }}-${{ github.sha }}
+          path: 日志/
+          if-no-files-found: warn
+          retention-days: 90

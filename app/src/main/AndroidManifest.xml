@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 联网：拉 GitHub 的东西、上传下载文件 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      前台服务权限 M1 加（做长任务上传时必须，届时要连同"首行 promote + 看门狗"一起进，
+      不许只加权限不加模板 —— 旧 Agora 那个崩溃 140 次就是这么来的）。
+    -->
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false">
+        <!-- allowBackup=false：备份走我们自己的导出功能（明文、可核对），不依赖系统的 adb backup -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

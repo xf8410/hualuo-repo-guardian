@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 界面上给人看的文字一律放这里，不散在代码里写死 -->
+    <string name="app_name">Hualuo全自动仓库工具</string>
+    <string name="home_engine_ready">引擎已就位：一次搬 64 KiB，大文件不占内存</string>
+    <string name="home_version_prefix">版本</string>
+</resources>

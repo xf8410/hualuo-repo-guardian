@@ -1,0 +1,23 @@
+# 构建产物和本地环境，不进仓库
+.gradle/
+build/
+captures/
+local.properties
+.kotlin/
+apk.sha256
+
+# 编辑器与系统
+.idea/
+*.iml
+.DS_Store
+
+# 日志与临时物
+*.log
+ci-logs/
+tmp/
+
+# 规矩：二进制产物（.so/.jar/.apk/安装包）不许提交进仓库，只走发布页
+*.so
+*.jar
+*.aar
+*.apk
