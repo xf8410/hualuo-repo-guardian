@@ -6,12 +6,15 @@ name: 自检（每次提交都跑）
 # 失败时必须把完整原因贴进日志和摘要，不许只给一句"失败了"。
 # 检查规则一律写成 [[:space:]] 这种形式，是为了避免"正则匹配到自己这一行"。
 #
-# 记在这儿别再踩的两条：
+# 记在这儿别再踩的三条：
 #   1) jobs 下面的**键名**不能写中文（写成「自检:」会让 GitHub 解析失败：零 job、
 #      日志全空、run 名字退化成文件路径）。中文只能写在给人看的 name: 里。
 #   2) 触发器不要同时"不限分支 push"+"pull_request"，否则每个提交都跑两遍浪费机器。
 #      现在的口径：往 main 直接提交时跑；开 PR 或 PR 有新提交时跑；
 #      workbench/* 分支只要开了 PR 就有 CI，不再单独跑一遍。
+#   3) 行数检查**不许**用 `xargs wc -l`：多文件时 wc 会额外打一行 `total`，
+#      于是"全仓加起来刚过 1000 行"就被当成"某个文件超了 999 行"（真踩过，
+#      报的还是 `1000 total` 这种连文件名都没有的行）。改成逐文件 `wc -l < 文件`。
 
 on:
   push:
@@ -78,10 +81,25 @@ jobs:
         run: |
           set -uo pipefail
           echo "为什么查：旧 Agora 有二十多个 20KB 以上的巨型文件（最大 57KB），补丁摞补丁，没人敢动。"
-          over=$(find engine app -type f \( -name '*.kt' -o -name '*.kts' \) -print0 | xargs -0 -r wc -l | awk '$1 > 999 {print}' || true)
+          over=""
+          biggest=0
+          biggest_name=""
+          counted=0
+          while IFS= read -r f; do
+            n=$(wc -l < "$f")
+            counted=$((counted + 1))
+            if [ "$n" -gt "$biggest" ]; then
+              biggest=$n
+              biggest_name=$f
+            fi
+            if [ "$n" -gt 999 ]; then
+              over="$over$n  $f"$'\n'
+            fi
+          done < <(find engine app -type f \( -name '*.kt' -o -name '*.kts' \))
+          echo "逐文件数过 $counted 个 .kt/.kts，最长的是 $biggest_name（$biggest 行）。"
           if [ -n "$over" ]; then
             echo "以下文件超过 999 行，必须拆开："
-            printf '%s\n' "$over"
+            printf '%s' "$over"
             exit 1
           fi
           echo "全部在 999 行以内。"
