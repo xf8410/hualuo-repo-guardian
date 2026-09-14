@@ -137,6 +137,12 @@ jobs:
           mkdir -p 日志
           gradle --no-daemon --stacktrace :engine:test 2>&1 | tee 日志/引擎测试.log
 
+      - name: 跑界面状态测试（纯 JVM：子页栈/多选删/附件账这些逻辑必须有人盯）
+        run: |
+          set -o pipefail
+          mkdir -p 日志
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest 2>&1 | tee 日志/界面测试.log
+
       - name: 打安卓包（调试签名，不设任何密钥）
         run: |
           set -o pipefail
@@ -188,5 +194,4 @@ jobs:
         with:
           name: 自检日志-${{ github.run_id }}-${{ github.sha }}
           path: 日志/
-          if-no-files-found: warn
           retention-days: 90

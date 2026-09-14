@@ -1,0 +1,412 @@
+package com.hualuo.repotool.ui.settings
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hualuo.repotool.ui.components.SegRow
+import com.hualuo.repotool.ui.components.SliderRow
+import com.hualuo.repotool.ui.components.SwitchPill
+import com.hualuo.repotool.ui.data.DefaultSearchProviderId
+import com.hualuo.repotool.ui.data.SettingsSections
+import com.hualuo.repotool.ui.data.SubPages
+import com.hualuo.repotool.ui.model.SettingsItem
+import com.hualuo.repotool.ui.model.SubField
+import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.theme.Accent
+import com.hualuo.repotool.ui.theme.Bg
+import com.hualuo.repotool.ui.theme.CardBg
+import com.hualuo.repotool.ui.theme.ChevGray
+import com.hualuo.repotool.ui.theme.Hairline
+import com.hualuo.repotool.ui.theme.IconTile
+import com.hualuo.repotool.ui.theme.Ink
+import com.hualuo.repotool.ui.theme.SubInk
+
+/**
+ * 设置层（v13 #settings + #sub）：主页 8 组 27 项 + 子页栈。
+ * 主页搜索框实时过滤（组内无命中则整组隐藏）；← 逐级返回（对应 SUBSTACK pop）。
+ * 控件状态暂存本地（演示态），M4 接线时换成 DataStore。
+ * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
+ */
+@Composable
+fun SettingsOverlay(state: AppUiState) {
+    val top = state.subStack.lastOrNull()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Bg),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(CardBg)
+                    .border(1.dp, Hairline, CircleShape)
+                    .clickable { state.backFromSettings() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("\u2190", fontSize = 16.sp, color = Ink)
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                top?.let { SubPages[it]?.title } ?: "设置",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Ink,
+            )
+        }
+
+        if (top == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(CardBg)
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("\uD83D\uDD0D", fontSize = 14.sp, color = SubInk)
+                Spacer(Modifier.width(8.dp))
+                Box(modifier = Modifier.weight(1f)) {
+                    if (state.settingsQuery.isEmpty()) {
+                        Text("搜设置，比如「代理」「备份」", fontSize = 14.sp, color = SubInk)
+                    }
+                    BasicTextField(
+                        value = state.settingsQuery,
+                        onValueChange = { state.settingsQuery = it },
+                        textStyle = TextStyle(fontSize = 14.sp, color = Ink),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp)
+                    .padding(bottom = 26.dp),
+            ) {
+                val q = state.settingsQuery.trim().lowercase()
+                SettingsSections.forEach { sec ->
+                    val hit = sec.items.filter {
+                        q.isEmpty() ||
+                            it.title.lowercase().contains(q) ||
+                            it.desc.lowercase().contains(q)
+                    }
+                    if (hit.isNotEmpty()) {
+                        Text(
+                            sec.title,
+                            fontSize = 13.sp,
+                            color = Accent,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(start = 6.dp, top = 13.dp, bottom = 7.dp),
+                        )
+                        hit.forEach { item -> SettingsItemRow(state, item) }
+                    }
+                }
+                Text(
+                    "每一项都能点开，点开才是真设置",
+                    fontSize = 11.sp,
+                    color = Color(0xFFA8AFBA),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                )
+            }
+        } else {
+            // 跨函数边界拿不到 ColumnScope 的 weight——CI 实锤过一次（run 34804570780），
+            // 所以这里由父级把 Modifier.weight(1f) 传进去，子页自己不再凭空 weight。
+            SubPageView(state, top, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SettingsItemRow(state: AppUiState, item: SettingsItem) {
+    var sw by remember { mutableStateOf(true) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 9.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(CardBg)
+            .clickable { state.subStack = state.subStack + item.subKey }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(IconTile),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(item.icon, fontSize = 17.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(item.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Text(item.desc, fontSize = 11.5.sp, color = SubInk)
+        }
+        if (item.subKey == "title") {
+            SwitchPill(sw) { sw = !sw }
+        } else {
+            item.value?.let {
+                Text(
+                    it,
+                    fontSize = 11.5.sp,
+                    color = SubInk,
+                    fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(92.dp),
+                )
+            }
+            Text("\u203A", color = ChevGray, fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp))
+        }
+    }
+}
+
+@Composable
+private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Modifier) {
+    val page = SubPages[key] ?: return
+    val switches = remember(key) { mutableStateMapOf<String, Boolean>() }
+    val segs = remember(key) { mutableStateMapOf<String, Int>() }
+    val sliders = remember(key) { mutableStateMapOf<String, Float>() }
+    val radioSel = remember(key) { mutableStateOf(DefaultSearchProviderId) }
+    val inputs = remember(key) { mutableStateMapOf<String, String>() }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp)
+            .padding(bottom = 26.dp),
+    ) {
+        Spacer(Modifier.height(6.dp))
+        page.fields.forEach { f ->
+            when (f) {
+                is SubField.Sec -> Text(
+                    f.text,
+                    fontSize = 13.sp,
+                    color = Accent,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 6.dp, top = 13.dp, bottom = 7.dp),
+                )
+                is SubField.Row -> FRow {
+                    Text(f.label, fontSize = 14.sp, color = Ink)
+                    Spacer(Modifier.weight(1f))
+                    // 版本占位在这里落地：数据文件不写死号，渲染时注入
+                    val shown = f.value.replace("%VERSION%", state.versionLabel)
+                    if (shown.isNotEmpty()) {
+                        Text(shown, fontSize = 12.5.sp, color = SubInk, fontFamily = FontFamily.Monospace)
+                    }
+                    if (f.gotoKey != null) {
+                        val goto = f.gotoKey
+                        Text(
+                            "\u203A",
+                            color = ChevGray,
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .clickable { state.subStack = state.subStack + goto },
+                        )
+                    }
+                }
+                is SubField.Switch -> FRow {
+                    Text(f.label, fontSize = 14.sp, color = Ink, modifier = Modifier.weight(1f))
+                    val on = switches[f.label] ?: f.on
+                    SwitchPill(on) { switches[f.label] = !on }
+                }
+                is SubField.Seg -> Column(Modifier.padding(horizontal = 6.dp)) {
+                    Text(f.label, fontSize = 12.5.sp, color = SubInk, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
+                    val sel = segs[f.label] ?: f.sel
+                    SegRow(f.options, sel) { segs[f.label] = it }
+                }
+                is SubField.Input -> FRow {
+                    Text(f.label, fontSize = 14.sp, color = Ink)
+                    Spacer(Modifier.width(10.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        val v = inputs[f.label] ?: ""
+                        if (v.isEmpty() && f.placeholder.isNotEmpty()) {
+                            Text(
+                                f.placeholder,
+                                fontSize = 13.sp,
+                                color = SubInk,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        BasicTextField(
+                            value = v,
+                            onValueChange = { inputs[f.label] = it },
+                            textStyle = TextStyle(fontSize = 13.sp, color = Ink, textAlign = TextAlign.End),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                is SubField.Slider -> Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 9.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(CardBg)
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    val v = sliders[f.label] ?: f.value.toFloat()
+                    SliderRow(f.label, f.min.toFloat(), f.max.toFloat(), v) { sliders[f.label] = it }
+                }
+                is SubField.Note -> Text(
+                    f.text,
+                    fontSize = 12.sp,
+                    color = SubInk,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                )
+                is SubField.Action -> FRow {
+                    Text(f.icon, fontSize = 17.sp, color = Accent)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(f.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                        Text(f.desc, fontSize = 12.5.sp, color = SubInk, lineHeight = 19.sp)
+                    }
+                }
+                is SubField.Head -> Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 9.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(CardBg)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
+                    Text(f.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(f.desc, fontSize = 12.5.sp, color = SubInk)
+                }
+                is SubField.BigInput -> Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(CardBg)
+                        .border(1.dp, Hairline, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
+                    val v = inputs[f.placeholder] ?: ""
+                    if (v.isEmpty()) Text(f.placeholder, fontSize = 14.sp, color = SubInk)
+                    BasicTextField(
+                        value = v,
+                        onValueChange = { inputs[f.placeholder] = it },
+                        textStyle = TextStyle(fontSize = 14.sp, color = Ink),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                is SubField.Button -> Box(
+                    modifier = Modifier
+                        .padding(bottom = 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Accent)
+                        .clickable { state.toast("已提交（演示，接线后生效）") }
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                ) {
+                    Text(f.text, color = Color.White, fontSize = 13.5.sp)
+                }
+                is SubField.Radio -> Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        f.label,
+                        fontSize = 13.sp,
+                        color = SubInk,
+                        modifier = Modifier.padding(start = 6.dp, top = 4.dp, bottom = 6.dp),
+                    )
+                    f.options.forEach { c ->
+                        val on = radioSel.value == c.id
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 9.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(CardBg)
+                                .clickable { radioSel.value = c.id }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, if (on) Accent else ChevGray, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (on) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(12.dp)
+                                            .clip(CircleShape)
+                                            .background(Accent),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(c.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                                Text(c.desc, fontSize = 12.5.sp, color = SubInk)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FRow(content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 9.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(CardBg)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}

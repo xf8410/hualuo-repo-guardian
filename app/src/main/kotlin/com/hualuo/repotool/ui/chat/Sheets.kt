@@ -1,0 +1,226 @@
+package com.hualuo.repotool.ui.chat
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hualuo.repotool.ui.components.LRow
+import com.hualuo.repotool.ui.components.SegRow
+import com.hualuo.repotool.ui.components.SheetScaffold
+import com.hualuo.repotool.ui.components.SwitchPill
+import com.hualuo.repotool.ui.data.DemoModels
+import com.hualuo.repotool.ui.data.DemoTasks
+import com.hualuo.repotool.ui.model.ModelRow
+import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.theme.Accent
+import com.hualuo.repotool.ui.theme.Bg
+import com.hualuo.repotool.ui.theme.ChevGray
+import com.hualuo.repotool.ui.theme.ErrRed
+import com.hualuo.repotool.ui.theme.Hairline
+import com.hualuo.repotool.ui.theme.Ink
+import com.hualuo.repotool.ui.theme.SubInk
+
+/** 三个原位弹层的总闸：模型 / 本回合工具 / 任务详情（互斥，同原型 closeAll 语义）。 */
+@Composable
+fun SheetsLayer(state: AppUiState) {
+    when {
+        state.modelSheetOpen -> ModelSheet(state)
+        state.toolSheetOpen -> ToolSheet(state)
+        state.taskSheetKey != null -> TaskDetailSheet(state, state.taskSheetKey ?: "")
+    }
+}
+
+@Composable
+private fun ModelSheet(state: AppUiState) {
+    val q = state.modelQuery.trim().lowercase()
+    val hit = DemoModels.filter { q.isEmpty() || it.name.lowercase().contains(q) }
+    SheetScaffold("切换模型", onDismiss = { state.modelSheetOpen = false }) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Bg)
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+        ) {
+            if (state.modelQuery.isEmpty()) {
+                Text("搜索模型…", fontSize = 13.sp, color = SubInk)
+            }
+            BasicTextField(
+                value = state.modelQuery,
+                onValueChange = { state.modelQuery = it },
+                textStyle = TextStyle(fontSize = 13.sp, color = Ink),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            hit.groupBy { it.group }.forEach { (group, rows) ->
+                Text(group, fontSize = 11.sp, color = SubInk, modifier = Modifier.padding(start = 2.dp, top = 7.dp, bottom = 3.dp))
+                rows.forEach { m -> ModelRowView(state, m) }
+            }
+            if (hit.isEmpty()) {
+                Text("无匹配", fontSize = 12.sp, color = SubInk, modifier = Modifier.padding(8.dp))
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+            Checkbox(
+                checked = state.lockToConversation,
+                onCheckedChange = { state.lockToConversation = it },
+                colors = CheckboxDefaults.colors(checkedColor = Accent),
+                modifier = Modifier.scaleSmall(),
+            )
+            Text("锁定到本会话（不勾仅影响下一条）", fontSize = 12.5.sp, color = SubInk)
+        }
+    }
+}
+
+/** 带图守门（v13.1 新增）：附件行有东西且模型无视觉 → 置灰不可选，点它出声说明。 */
+private fun ModelRow.visionBlocked(state: AppUiState): Boolean =
+    state.thumbs.isNotEmpty() && !hasVision
+
+@Composable
+private fun ModelRowView(state: AppUiState, m: ModelRow) {
+    val dis = m.visionBlocked(state)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 7.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (m.isDefault) Color(0xFFF0F5FF) else Color(0xFFFAFBFC))
+            .border(
+                1.dp,
+                if (m.isDefault) Accent else Hairline,
+                RoundedCornerShape(14.dp),
+            )
+            .alpha(if (dis) 0.45f else 1f)
+            .clickable {
+                if (dis) {
+                    state.toast("这个模型看不了图：先移除图片附件，或换支持视觉的模型")
+                } else {
+                    state.currentModel = m.name
+                    state.modelSheetOpen = false
+                }
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(m.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Ink)
+        Spacer(Modifier.width(4.dp))
+        Text(m.group, fontSize = 11.sp, color = SubInk)
+        Spacer(Modifier.weight(1f))
+        Text("ctx " + m.ctx, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = SubInk)
+        Spacer(Modifier.width(6.dp))
+        CapChip("工具" + (if (m.hasTools) "\u2713" else "\u2717"), bad = !m.hasTools)
+        Spacer(Modifier.width(4.dp))
+        if (dis) {
+            CapChip("视觉\u2717 \u00B7 带图附件", bad = true)
+        } else {
+            CapChip("视觉" + (if (m.hasVision) "\u2713" else "\u2717"), bad = !m.hasVision)
+        }
+    }
+}
+
+@Composable
+private fun CapChip(text: String, bad: Boolean) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(if (bad) Color(0xFFFDECEC) else Color(0xFFEEF1F6))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    ) {
+        Text(text, fontSize = 10.sp, color = if (bad) ErrRed else SubInk)
+    }
+}
+
+@Composable
+private fun ToolSheet(state: AppUiState) {
+    SheetScaffold("本回合工具", onDismiss = { state.toolSheetOpen = false }) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("\uD83E\uDDE0 思考", fontSize = 14.sp, color = Ink)
+                Spacer(Modifier.width(8.dp))
+                Text(if (state.thinkOn) "开 \u00B7 " + listOf("低", "中", "高", "最高")[state.thinkLevel] else "关", fontSize = 12.5.sp, color = SubInk)
+                Spacer(Modifier.weight(1f))
+                SwitchPill(state.thinkOn) { state.thinkOn = !state.thinkOn }
+            }
+            if (state.thinkOn) {
+                SegRow(listOf("低", "中", "高", "最高"), state.thinkLevel) { state.thinkLevel = it }
+            }
+            ToolSwitchRow("\uD83C\uDF10 网页搜索", state.webSearchOn) { state.webSearchOn = !state.webSearchOn }
+            ToolSwitchRow("\u2328\uFE0F 终端 Shell", state.shellOn) { state.shellOn = !state.shellOn }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("\u25B6\uFE0F 代码执行", fontSize = 14.sp, color = Ink)
+                Spacer(Modifier.width(8.dp))
+                CapChip("仅 Gemini", bad = false)
+                Spacer(Modifier.weight(1f))
+                SwitchPill(state.codeExecOn) { state.codeExecOn = !state.codeExecOn }
+            }
+            ToolSwitchRow("\uD83D\uDC65 多智能体接力", state.relayOn) { state.relayOn = !state.relayOn }
+        }
+    }
+}
+
+@Composable
+private fun ToolSwitchRow(label: String, on: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 14.sp, color = Ink)
+        Spacer(Modifier.weight(1f))
+        Text(if (on) "开" else "关", fontSize = 12.5.sp, color = SubInk)
+        Spacer(Modifier.width(8.dp))
+        SwitchPill(on, onToggle)
+    }
+}
+
+@Composable
+private fun TaskDetailSheet(state: AppUiState, key: String) {
+    val t = DemoTasks.firstOrNull { it.name == key }
+    SheetScaffold(key, onDismiss = { state.taskSheetKey = null }) {
+        if (t != null) {
+            LRow("状态", t.status)
+            LRow("上次运行", t.last)
+            LRow("说明", t.note, monoValue = false)
+        }
+    }
+}
+
+private fun Modifier.scaleSmall(): Modifier = this.width(28.dp)
