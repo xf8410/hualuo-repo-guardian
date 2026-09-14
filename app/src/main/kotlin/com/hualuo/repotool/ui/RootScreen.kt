@@ -24,12 +24,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,6 +47,7 @@ import com.hualuo.repotool.ui.observe.ObserveScreen
 import com.hualuo.repotool.ui.repo.RepoScreen
 import com.hualuo.repotool.ui.settings.SettingsOverlay
 import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.state.createUiPersistence
 import com.hualuo.repotool.ui.tasks.TasksScreen
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
@@ -54,17 +57,63 @@ import com.hualuo.repotool.ui.theme.SubInk
 import com.hualuo.repotool.ui.tools.ToolsScreen
 import kotlinx.coroutines.delay
 
+/** 自动保存的去抖窗口：改动停在这个时间之后才真落盘（打字时不一个字写一次盘）。 */
+private const val AUTO_SAVE_DEBOUNCE_MS = 600L
+
 /**
  * 根界面：v13.1 的骨架——顶栏（☰/页名/ctx 账本）+ 五页内容 + 输入区（仅回合流）+ 底栏五签，
  * 上面盖抽屉、设置层、弹层、toast。所有浮层都是「壳内」的 Box 层：
  * 外壳锁高、滚动只发生在各层内部（原型漂移病的根治，Compose 版同方）。
  *
+ * 持久化从这里进：启动时读一份设置（读不懂会带原因退化，不炸界面），
+ * 之后界面字段变了就攒着，停 [AUTO_SAVE_DEBOUNCE_MS] 落一次盘，离开时再兜一次。
+ * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默。
+ *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
 @Composable
 fun HualuoApp(versionLabel: String) {
-    val state = remember { AppUiState() }
+    val context = LocalContext.current
+    val bundle = remember(context) { createUiPersistence(context) }
+    val state = remember(bundle) { AppUiState(bundle.persistence) }
     state.versionLabel = versionLabel
+
+    // 启动通知（设置文件读不懂 / 有读不懂的项）：只弹一次
+    LaunchedEffect(bundle.notice) {
+        bundle.notice?.let { state.toast(it) }
+    }
+
+    // 改动落盘：去抖 600ms，失败与坏消息都要出声
+    LaunchedEffect(
+        state.input,
+        state.currentModel,
+        state.tab,
+        state.thinkOn,
+        state.thinkLevel,
+        state.webSearchOn,
+        state.shellOn,
+        state.codeExecOn,
+        state.relayOn,
+        state.lockToConversation,
+    ) {
+        delay(AUTO_SAVE_DEBOUNCE_MS)
+        val failure = state.flushPersistence()
+        val messages = state.persistenceMessages()
+        if (failure == null && messages.isEmpty()) return@LaunchedEffect
+        val notice = buildString {
+            if (failure != null) append("设置没存上：$failure")
+            if (messages.isNotEmpty()) {
+                if (isNotEmpty()) append("；")
+                append("设置提示：").append(messages.joinToString("；"))
+            }
+        }
+        state.toast(notice)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { state.flushPersistence() }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = Bg) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
