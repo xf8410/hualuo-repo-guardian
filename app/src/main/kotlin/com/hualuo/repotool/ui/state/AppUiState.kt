@@ -1,6 +1,7 @@
 package com.hualuo.repotool.ui.state
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
@@ -13,12 +14,13 @@ import kotlin.reflect.KProperty
  * 全局界面状态（v13.1 的 JS 变量一对一翻译）。
  *
  * 现在的分工：
- *  - 已接真电的字段（tab / input / currentModel / 六个工具开关 / lockToConversation）走 persist：
+ *  - 已接真电的字段（tab、input、currentModel、六个工具开关、lockToConversation）走 persist：
  *    初值从设置里读，改了就记一笔，落盘时机由界面攒着 flush。
+ *  - 设置页里新加的开关走 flag 与 setFlag：键名由数据表带过来，不占字段位。
  *  - 仍是演示态的字段（会话列表、附件缩略、toast、弹层）还没后端，M2 会话库那批再换。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
- * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys。
+ * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys 与 SettingsCatalog。
  * 委托一律和声明写在同一行：属性声明在语法上本身就是完整的，把 by 挪到下一行有被当成分句结束的风险，不赌。
  */
 class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
@@ -58,12 +60,30 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     /** 取走设置层累计的坏消息（非法值、半个表情等），取走即清空。 */
     fun persistenceMessages(): List<String> = persist.drainMessages()
 
+    // ── 设置页的真开关（按键名，不占字段位） ────────────────────────────────
+
+    /**
+     * 本次界面里被改过的开关。只由 setFlag 填，读的时候不写：
+     * getOrPut 会在组合期间写状态，那是重组抖动的常见来源，别给后面的人埋。
+     */
+    private val flagOverrides = mutableStateMapOf<String, Boolean>()
+
+    /** 读一个真开关：本次改过的优先，其次设置文件，最后调用方给的默认值。 */
+    fun flag(key: String, defaultOn: Boolean = false): Boolean =
+        flagOverrides[key] ?: readBool(key, defaultOn)
+
+    /** 改一个真开关：既更新界面状态（会重组），又记进设置等落盘。 */
+    fun setFlag(key: String, value: Boolean) {
+        flagOverrides[key] = value
+        persist.save(key, value.toString())
+    }
+
     // ── 仍是演示态的字段 ────────────────────────────────────────────────────
 
-    /** 版本串由入口注入（BuildConfig ← version.properties 单源），界面里不许写死。 */
+    /** 版本串由入口注入（BuildConfig 读自 version.properties 单源），界面里不许写死。 */
     var versionLabel by mutableStateOf("")
 
-    // 抽屉（会话列表从演示数据起步；删除/新建都作用在这份可变副本上）
+    // 抽屉（会话列表从演示数据起步；删除与新建都作用在这份可变副本上）
     var drawerOpen by mutableStateOf(false)
     var convQuery by mutableStateOf("")
     var selecting by mutableStateOf(false)
@@ -81,7 +101,7 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     var queueBarOn by mutableStateOf(true)
     var thumbs by mutableStateOf(DemoComposerThumbs)
 
-    // 原位弹层（模型/工具/任务详情互斥，同原型 closeAll）
+    // 原位弹层（模型、工具、任务详情互斥，同原型 closeAll）
     var modelSheetOpen by mutableStateOf(false)
     var toolSheetOpen by mutableStateOf(false)
     var taskSheetKey by mutableStateOf<String?>(null)
@@ -91,7 +111,7 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     var settingsOpen by mutableStateOf(false)
     var settingsQuery by mutableStateOf("")
 
-    /** 子页栈：空=停在设置主页；栈顶=当前二级页 key（对应原型 SUBSTACK）。 */
+    /** 子页栈：空表示停在设置主页；栈顶是当前二级页 key（对应原型 SUBSTACK）。 */
     var subStack by mutableStateOf(listOf<String>())
 
     // toast

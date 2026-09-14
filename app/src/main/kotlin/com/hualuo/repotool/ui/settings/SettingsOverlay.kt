@@ -40,8 +40,9 @@ import com.hualuo.repotool.ui.components.SegRow
 import com.hualuo.repotool.ui.components.SliderRow
 import com.hualuo.repotool.ui.components.SwitchPill
 import com.hualuo.repotool.ui.data.DefaultSearchProviderId
-import com.hualuo.repotool.ui.data.SettingsSections
-import com.hualuo.repotool.ui.data.SubPages
+import com.hualuo.repotool.ui.data.mergedSettingsSections
+import com.hualuo.repotool.ui.data.orphanAdditions
+import com.hualuo.repotool.ui.data.subPage
 import com.hualuo.repotool.ui.model.SettingsItem
 import com.hualuo.repotool.ui.model.SubField
 import com.hualuo.repotool.ui.state.AppUiState
@@ -49,6 +50,7 @@ import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.CardBg
 import com.hualuo.repotool.ui.theme.ChevGray
+import com.hualuo.repotool.ui.theme.ErrRed
 import com.hualuo.repotool.ui.theme.Hairline
 import com.hualuo.repotool.ui.theme.IconTile
 import com.hualuo.repotool.ui.theme.Ink
@@ -57,7 +59,11 @@ import com.hualuo.repotool.ui.theme.SubInk
 /**
  * 设置层（v13 #settings + #sub）：主页 8 组 27 项 + 子页栈。
  * 主页搜索框实时过滤（组内无命中则整组隐藏）；← 逐级返回（对应 SUBSTACK pop）。
- * 控件状态暂存本地（演示态），M4 接线时换成 DataStore。
+ *
+ * 两类开关要分清：演示态 `SubField.Switch` 的状态只活在本次 remember 里（照原型搬来的行，
+ * 退出即丢）；真设置 `SubField.PersistedSwitch` 走 `AppUiState` 的按键名通道，改完立刻落盘，
+ * 关掉 App 再开还在。挂不上组的真设置项由 `orphanAdditions()` 在这一页顶部喊出来。
+ *
  * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
  */
 @Composable
@@ -87,7 +93,7 @@ fun SettingsOverlay(state: AppUiState) {
             }
             Spacer(Modifier.width(12.dp))
             Text(
-                top?.let { SubPages[it]?.title } ?: "设置",
+                top?.let { subPage(it)?.title } ?: "设置",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = Ink,
@@ -126,8 +132,21 @@ fun SettingsOverlay(state: AppUiState) {
                     .padding(horizontal = 14.dp)
                     .padding(bottom = 26.dp),
             ) {
+                // 挂不上组的真设置项：宁可在这里红字喊出来，也不许悄悄少一项设置
+                val orphans = orphanAdditions()
+                if (orphans.isNotEmpty()) {
+                    Text(
+                        "有 ${orphans.size} 项设置挂不到任何组（组 id 写错）：" +
+                            orphans.joinToString("、") { it.title },
+                        fontSize = 12.sp,
+                        color = ErrRed,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                    )
+                }
                 val q = state.settingsQuery.trim().lowercase()
-                SettingsSections.forEach { sec ->
+                mergedSettingsSections().forEach { sec ->
                     val hit = sec.items.filter {
                         q.isEmpty() ||
                             it.title.lowercase().contains(q) ||
@@ -209,7 +228,7 @@ private fun SettingsItemRow(state: AppUiState, item: SettingsItem) {
 
 @Composable
 private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Modifier) {
-    val page = SubPages[key] ?: return
+    val page = subPage(key) ?: return
     val switches = remember(key) { mutableStateMapOf<String, Boolean>() }
     val segs = remember(key) { mutableStateMapOf<String, Int>() }
     val sliders = remember(key) { mutableStateMapOf<String, Float>() }
@@ -257,6 +276,21 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                     Text(f.label, fontSize = 14.sp, color = Ink, modifier = Modifier.weight(1f))
                     val on = switches[f.label] ?: f.on
                     SwitchPill(on) { switches[f.label] = !on }
+                }
+                // 真设置开关：值走 AppUiState 的按键名通道，改完立刻落盘并给反馈
+                is SubField.PersistedSwitch -> FRow {
+                    Text(f.label, fontSize = 14.sp, color = Ink, modifier = Modifier.weight(1f))
+                    val on = state.flag(f.key, f.defaultOn)
+                    SwitchPill(on) {
+                        val next = !on
+                        state.setFlag(f.key, next)
+                        val failure = state.flushPersistence()
+                        when {
+                            failure != null -> state.toast("设置没存上：" + failure)
+                            next -> state.toast("已打开：网关失败会自动重发一次，这次请求会再花一遍 token")
+                            else -> state.toast("已关掉：不替你重发，失败时把原因摊开、重试按钮在你手上")
+                        }
+                    }
                 }
                 is SubField.Seg -> Column(Modifier.padding(horizontal = 6.dp)) {
                     Text(f.label, fontSize = 12.5.sp, color = SubInk, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))

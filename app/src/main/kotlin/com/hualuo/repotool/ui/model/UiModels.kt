@@ -39,7 +39,7 @@ data class ChatMsg(
 /** 抽屉里的会话行。 */
 data class Conv(val id: String, val title: String, val meta: String)
 
-/** 模型弹层一行：分组 + 真实 ctx + 工具/视觉能力（v13 .mrow）。 */
+/** 模型弹层一行（v13 .mrow）：分组 + 真实 ctx + 工具/视觉能力。 */
 data class ModelRow(
     val name: String,
     val group: String,
@@ -76,10 +76,24 @@ data class SettingsSection(val id: String, val title: String, val items: List<Se
  * r=普通行（可带跳转） s=开关 g=分段选择 i=输入框 l=滑条 n=底部说明
  * sec=组标题 a=动作卡(图标+标题+描述) at=标题块+说明 in2=大输入框 btn=主按钮
  * radio=单选列表（网页搜索五家用它，照用户截图的「选择搜索提供商」对话框）
+ *
+ * **两种开关不是一回事，别混用**：
+ *  - [Switch] 是**演示态**：状态只活在 `remember` 里，退出子页就没了（原型照搬过来的行）；
+ *  - [PersistedSwitch] 是**真设置**：状态经 `AppUiState` 写进设置文件，关掉 App 再开还在。
+ * 新接一项就用 [PersistedSwitch]；把 [Switch] 换成它的时候顺带删掉那行的演示数据。
  */
 sealed class SubField {
     data class Row(val label: String, val value: String = "", val gotoKey: String? = null) : SubField()
+
+    /** 演示态开关：只活在本次界面的 remember 里，退出即丢。不许拿它冒充真设置。 */
     data class Switch(val label: String, val on: Boolean) : SubField()
+
+    /**
+     * 真设置开关：[key] 是设置文件里的键名（ASCII 点分小写），[defaultOn] 是没设置过时的值。
+     * 渲染时必须走 `AppUiState` 的按键名读写通道，不许退回本地 remember。
+     */
+    data class PersistedSwitch(val label: String, val key: String, val defaultOn: Boolean) : SubField()
+
     data class Seg(val label: String, val options: List<String>, val sel: Int) : SubField()
     data class Input(val label: String, val placeholder: String = "") : SubField()
 
