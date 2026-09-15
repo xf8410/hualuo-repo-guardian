@@ -1,5 +1,7 @@
 package com.hualuo.engine.api
 
+import com.hualuo.engine.http.FailureClass
+
 /**
  * 生成失败的分类。**搬自原版 Agora 的 `api/GenerationError.kt`**（那套分类是对的，照用），
  * 但 `userMessage()` 整段重写：原版有四处会让人查不下去或者看到错东西（见每处注释）。
@@ -23,6 +25,13 @@ sealed class GenerationError {
 
     /** 对方按协议回了错误体（无效密钥、限流、服务端错）。 */
     data class Api(val code: String?, val type: String?, val message: String) : GenerationError()
+
+    /**
+     * 传输层失败：连接级别的事实（压根没连上、静默卡死、用户取消、超限没状态码可用）。
+     * 接线层（ChatWireRunner）把 RetryPolicy 的 GiveUp 翻译成这一类，
+     * 出路按类别给 —— 别拿 "HTTP 0" 这种没有状态码的假 Network 糊弄人。
+     */
+    data class Transport(val failure: FailureClass, val detail: String) : GenerationError()
 
     /** SSE 某一行读不懂。[rawLine] 会在给人看的那句里截断脱敏后带出来。 */
     data class SseParse(val rawLine: String, val cause: String) : GenerationError()
@@ -95,6 +104,13 @@ sealed class GenerationError {
                 }
                 if (head.isEmpty()) brief(message) else "$head：${brief(message)}"
             }
+        }
+        is Transport -> when (failure) {
+            FailureClass.Cancelled -> "你按了停止，这次不算失败，也不会替你重发"
+            FailureClass.NoConnection -> "没连上对方：${brief(detail)}。检查网络，再核对「提供商」里的 base URL 写得对不对"
+            FailureClass.Stalled -> "连接卡住了：${brief(detail)}。要是内容已经出过一部分，别整条盲重发（会重复内容、再花一遍钱）"
+            FailureClass.ContextOverflow -> "上下文超限：删掉部分历史或开新会话再发；重发同一份内容只会再错一次"
+            else -> "网络出错（$failure）：${brief(detail)}"
         }
         // 修：不再只给一句"解析失败"，带上截断脱敏后的原文片段
         is SseParse -> "对方返回的内容读不懂（$cause）。看到的开头：「${brief(rawLine)}」——" +
