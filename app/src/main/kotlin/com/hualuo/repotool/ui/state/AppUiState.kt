@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
 import com.hualuo.repotool.ui.data.DemoConversations
+import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
+import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Conv
 import com.hualuo.repotool.ui.model.NavTab
 import kotlin.reflect.KProperty
@@ -17,10 +19,11 @@ import kotlin.reflect.KProperty
  *  - 已接真电的字段（tab、input、currentModel、六个工具开关、lockToConversation）走 persist：
  *    初值从设置里读，改了就记一笔，落盘时机由界面攒着 flush。
  *  - 设置页里新加的开关走 flag 与 setFlag：键名由数据表带过来，不占字段位。
+ *  - 回合流真消息住 chat（ChatRuntime）：发送走真网络，busy 也从它读，不再单独一个演示布尔。
  *  - 仍是演示态的字段（会话列表、附件缩略、toast、弹层）还没后端，M2 会话库那批再换。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
- * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys 与 SettingsCatalog。
+ * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys 与 ChatRuntime。
  * 委托一律和声明写在同一行：属性声明在语法上本身就是完整的，把 by 挪到下一行有被当成分句结束的风险，不赌。
  */
 class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
@@ -78,6 +81,22 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
         persist.save(key, value.toString())
     }
 
+    // ── 回合流真运行层 ──────────────────────────────────────────────────────
+
+    /**
+     * 真说过的话与生成槽都住这里（契约见 ChatRuntime）。
+     * 「网关失败自动重发」那个真开关当场从 flag 通道读——两边共用一份事实，不各记各的。
+     * 必须具名传：尾随 lambda 会绑到 ChatRuntime 的最后一个参数（clock，返回 Long），
+     * 拿开关去尾随就是拿 Boolean 冒充 Long——CI 编译段抓到过，别再犯。
+     */
+    val chat = ChatRuntime(
+        persist,
+        autoRetryCostly = { flag(RETRY_COSTLY_KEY, RETRY_COSTLY_DEFAULT) },
+    )
+
+    /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
+    val busy: Boolean get() = chat.busy
+
     // ── 仍是演示态的字段 ────────────────────────────────────────────────────
 
     /** 版本串由入口注入（BuildConfig 读自 version.properties 单源），界面里不许写死。 */
@@ -94,7 +113,6 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     var confirmAction: (() -> Unit)? = null
 
     // 输入区的瞬时态（不该持久化）
-    var busy by mutableStateOf(false)
     var micOn by mutableStateOf(false)
     var addMenuOpen by mutableStateOf(false)
     var loopBarOn by mutableStateOf(true)
