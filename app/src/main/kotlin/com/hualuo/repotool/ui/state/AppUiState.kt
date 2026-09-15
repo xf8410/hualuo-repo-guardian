@@ -19,11 +19,12 @@ import kotlin.reflect.KProperty
  *  - 已接真电的字段（tab、input、currentModel、六个工具开关、lockToConversation）走 persist：
  *    初值从设置里读，改了就记一笔，落盘时机由界面攒着 flush。
  *  - 设置页里新加的开关走 flag 与 setFlag：键名由数据表带过来，不占字段位。
+ *  - 设置页里的真文本走 text 与 setText：同样按键名，落盘按 settingsRevision 去抖。
  *  - 回合流真消息住 chat（ChatRuntime）：发送走真网络，busy 也从它读，不再单独一个演示布尔。
  *  - 仍是演示态的字段（会话列表、附件缩略、toast、弹层）还没后端，M2 会话库那批再换。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
- * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys 与 ChatRuntime。
+ * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys、SettingsCatalog 与 ChatRuntime。
  * 委托一律和声明写在同一行：属性声明在语法上本身就是完整的，把 by 挪到下一行有被当成分句结束的风险，不赌。
  */
 class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
@@ -79,6 +80,33 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     fun setFlag(key: String, value: Boolean) {
         flagOverrides[key] = value
         persist.save(key, value.toString())
+    }
+
+    // ── 设置页的真文本（按键名；提供商地址密钥这类） ────────────────────────
+
+    /**
+     * 本次改过、还没落盘的文本：输入框每敲一下只写内存，
+     * 真落盘由界面按 [settingsRevision] 攒着去抖——「一个字写一次盘」是绝对不许的。
+     */
+    private val textOverrides = mutableStateMapOf<String, String>()
+
+    /**
+     * 每次 setText 给这个版本号加一：自动保存的看护方只看这一个数，
+     * 不逐个盯每张输入框——以后文本键增减，看护点也不用跟着改。
+     */
+    var settingsRevision by mutableStateOf(0L)
+        private set
+
+    /** 读一个真文本设置：本次改过的优先，其次设置文件，最后调用方给的默认值。 */
+    fun text(key: String, default: String = ""): String =
+        textOverrides[key] ?: persist.load(key) ?: default
+
+    /** 改一个真文本：界面立刻更新、内存记一笔（不碰盘），修订号推进等去抖落盘。 */
+    fun setText(key: String, value: String) {
+        if (text(key) == value) return
+        textOverrides[key] = value
+        persist.save(key, value)
+        settingsRevision += 1
     }
 
     // ── 回合流真运行层 ──────────────────────────────────────────────────────

@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,7 +67,9 @@ import com.hualuo.repotool.ui.theme.SubInk
  *
  * 两类开关要分清：演示态 `SubField.Switch` 的状态只活在本次 remember 里（照原型搬来的行，
  * 退出即丢）；真设置 `SubField.PersistedSwitch` 走 `AppUiState` 的按键名通道，改完立刻落盘，
- * 关掉 App 再开还在。挂不上组的真设置项由 `orphanAdditions()` 在这一页顶部喊出来。
+ * 关掉 App 再开还在。文本框同理：演示态 `Input` 记住本地，真设置 `PersistedText` 走
+ * text/setText——编辑即生效，落盘由界面按修订号去抖（不一个字写一次盘）。
+ * 挂不上组的真设置项由 `orphanAdditions()` 在这一页顶部喊出来。
  *
  * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
  *
@@ -285,6 +289,39 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                             next -> state.toast("已打开：网关失败会自动重发一次，这次请求会再花一遍 token")
                             else -> state.toast("已关掉：不替你重发，失败时把原因摊开、重试按钮在你手上")
                         }
+                    }
+                }
+                // 真设置文本框：值走 text/setText 通道。编辑即上屏，落盘由界面按
+                // settingsRevision 去抖攒批——打字期间绝一个字写一次盘。
+                // secret 只打点显示；「密钥明文进盘」是 D-10 的总决定，不归这里管。
+                is SubField.PersistedText -> FRow {
+                    Text(f.label, fontSize = 14.sp, color = Ink)
+                    Spacer(Modifier.width(10.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        val v = state.text(f.key)
+                        if (v.isEmpty() && f.placeholder.isNotEmpty()) {
+                            Text(
+                                f.placeholder,
+                                fontSize = 13.sp,
+                                color = SubInk,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        BasicTextField(
+                            value = v,
+                            onValueChange = { state.setText(f.key, it) },
+                            singleLine = true,
+                            visualTransformation =
+                                if (f.secret) PasswordVisualTransformation() else VisualTransformation.None,
+                            textStyle = TextStyle(
+                                fontSize = 13.sp,
+                                color = Ink,
+                                textAlign = TextAlign.End,
+                                fontFamily = if (f.secret) FontFamily.Monospace else FontFamily.Default,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 is SubField.Seg -> Column(Modifier.padding(horizontal = 6.dp)) {

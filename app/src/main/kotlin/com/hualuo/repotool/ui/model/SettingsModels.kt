@@ -35,6 +35,7 @@ data class RadioChoice(
  *  - Switch 是演示态：状态只活在 remember 里，退出子页就没了（原型照搬过来的行）；
  *  - PersistedSwitch 是真设置：状态经 AppUiState 写进设置文件，关掉 App 再开还在。
  * 新接一项就用 PersistedSwitch；把演示态换成它的时候，顺带删掉那行的演示数据。
+ * 文本框同理：Input 是演示态，真设置一律用 PersistedText。
  */
 sealed class SubField {
     data class Row(val label: String, val value: String = "", val gotoKey: String? = null) : SubField()
@@ -47,6 +48,18 @@ sealed class SubField {
      * 渲染时必须走 AppUiState 的按键名读写通道，不许退回本地 remember。
      */
     data class PersistedSwitch(val label: String, val key: String, val defaultOn: Boolean) : SubField()
+
+    /**
+     * 真设置文本框：值走 AppUiState 的 text/setText 按键名通道。
+     * 编辑即生效、落盘由界面按修订号攒着去抖——输入框不许一个字写一次盘。
+     * secret=true 只影响屏显（打点显示）；盘上是否明文由 D-10 的总决定管，不归这个字段管。
+     */
+    data class PersistedText(
+        val label: String,
+        val key: String,
+        val placeholder: String = "",
+        val secret: Boolean = false,
+    ) : SubField()
 
     data class Seg(val label: String, val options: List<String>, val sel: Int) : SubField()
     data class Input(val label: String, val placeholder: String = "") : SubField()
