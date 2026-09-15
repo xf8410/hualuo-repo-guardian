@@ -1,7 +1,5 @@
 package com.hualuo.engine.api
 
-import java.util.Locale
-
 /**
  * 自定义端点 base URL 的补齐与回退。**搬自原版 Agora 的 `api/BaseUrlResolver.kt`**，
  * 搬的时候修了一处真 bug（见下）。
@@ -16,7 +14,6 @@ import java.util.Locale
  * 协议分隔符的第二个斜杠，于是这个 URL 被当成"已经带版本号"，`withV1` 就不补了，
  * 请求打到 `https://v1.internal.example.com/chat`（少一段 `/v1`），报 404 还查不出为什么。
  * 内网网关、自建反代、`v2.xxx.com` 这类域名真长这样，不是假设。
- *
  * 修法：**只在路径部分找**，而且要求是**完整的一段**（前面是 `/` 或开头，后面是 `/` 或结尾）。
  * 顺带把"段里只能是 v + 数字 + 少量后缀"钉死，避免把 `/video`、`/vlog2` 当成版本段。
  */
@@ -74,12 +71,19 @@ object BaseUrlResolver {
         return rebuilt.takeIf { it.isNotBlank() && !it.endsWith("://") }
     }
 
-    /** 拼一个端点：base 已带版本就只接路径，不重复版本段；`/` 多了也只用一个。 */
+    /**
+     * 拼一个端点：base 已带版本就只接路径，不重复版本段；`/` 多了也只用一个。
+     *
+     * 清账说明：搬来的第一版这里挂过一个 `lowercase().let { 原值 }` 的空转表达式
+     * （算了小写又扔掉，等于没算），当时没人调用它、CI 也看不出死码；现在
+     * OpenAiCompatClient 成了真用户，把它简化回直白的拼接 —— 行为逐字不变
+     * （端点小写与否由调用方自己负责，这里从不改大小写，那表达式本来就没改成）。
+     */
     fun endpoint(url: String, suffix: String): String {
         val base = url.trim().trimEnd('/')
         val tail = suffix.trim().trimStart('/')
         if (base.isEmpty()) return tail
         if (tail.isEmpty()) return base
-        return "$base/${tail.lowercase(Locale.US).let { suffix.trim().trimStart('/') }}"
+        return "$base/$tail"
     }
 }
