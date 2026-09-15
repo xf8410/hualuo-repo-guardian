@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,18 +48,45 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 /**
  * 回合流页（v13 #p-chat)：证据卡列表，滚动只发生在这一列里。
  *
+ * 数据来源换过一回血（2026-09-15「不要是摆设」）：**真对话优先**——
+ * state.chat 里说过话就只渲染真消息（演示卡混进真对话等于拿假历史冒充）；
+ * 空着的时候才摆演示卡兜底，且顶上明标一行「以下为示例」，不让人误认。
+ *
  * 图形字符一律走资源（`stringResource(IconKey.X.resId)`）—— 家规，闸门 NoEmojiInSourceTest。
  * 注意：取值只能发生在组合期，所以点击回调里要用的东西先在外层备好（见 quotePrefix）。
  */
 @Composable
 fun ChatScreen(state: AppUiState) {
+    val real = state.chat.messages
+    val listState = rememberLazyListState()
+    // 新消息与流式追加都把列表顶到底部——看生成过程不该还得手动下拉
+    LaunchedEffect(real.size, real.lastOrNull()?.text?.length ?: 0) {
+        if (real.isNotEmpty()) listState.scrollToItem(real.size)
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 14.dp),
     ) {
-        items(DemoMessages) { msg ->
-            MessageCard(state, msg)
+        if (real.isEmpty()) {
+            item {
+                Text(
+                    "以下为示例卡（从下面发出去的第一条真消息开始，这里整列换成真对话）",
+                    fontSize = 11.5.sp,
+                    color = SubInk,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                )
+            }
+            items(DemoMessages) { msg ->
+                MessageCard(state, msg)
+            }
+        } else {
+            items(real) { msg ->
+                MessageCard(state, msg)
+            }
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
@@ -112,7 +141,12 @@ private fun MessageCard(state: AppUiState, msg: ChatMsg) {
             }
             Spacer(Modifier.height(5.dp))
         }
-        Text(msg.text, fontSize = 14.sp, color = Ink, lineHeight = 22.sp)
+        if (msg.text.isEmpty()) {
+            // 生成中的空卡也得有存在感——没内容时给一句人话，不给转圈图形
+            Text("等对方开口…", fontSize = 13.sp, color = SubInk)
+        } else {
+            Text(msg.text, fontSize = 14.sp, color = Ink, lineHeight = 22.sp)
+        }
 
         msg.thinkLabel?.let { label ->
             var open by remember { mutableStateOf(false) }
