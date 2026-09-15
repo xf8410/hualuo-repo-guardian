@@ -7,6 +7,13 @@ plugins {
 }
 
 dependencies {
+    // 只要运行时库，不要编译器插件：这里全部用 Json.parseToJsonElement 动态读，
+    // 没有 @Serializable 数据类，所以不引 kotlin 序列化插件。
+    // 为什么必须引：提供商返回的错误体形状五花八门（error.message / error 是字符串 /
+    // detail / reason / error_description / 顶层 code+type / 网关直接吐 HTML），
+    // 手写 JSON 扫描器正是最容易出 bug 的地方，而这段代码要处理的是**不可信输入**。
+    // 后面搬对话请求体组装时同一份库还要用，不重复引。
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation("junit:junit:4.13.2")
 }
 

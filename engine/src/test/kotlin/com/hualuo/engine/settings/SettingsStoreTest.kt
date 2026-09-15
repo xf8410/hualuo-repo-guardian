@@ -15,6 +15,9 @@ import org.junit.rules.TemporaryFolder
  *
  * 覆盖面按旧仓踩过的坑排：内容必须逐字往返、未知键不许丢、坏数据必须出声、
  * 写失败不许报成功、大文件不许整份吞进内存、半个表情不许变成烂字节。
+ *
+ * 源文件受"不许表情（转义也不行）"闸门管：测试样本需要真表情码位时，
+ * 用码位构造字符串（Character.toChars），不在源码里写那个字符本身。
  */
 class SettingsStoreTest {
 
@@ -74,13 +77,17 @@ class SettingsStoreTest {
 
     @Test
     fun surrogatePairRoundTripsAsPlainText() {
+        // 码位构造，不进源码：U+2705 对勾表情、U+1F600 大笑脸（合法代理对）。
+        val checkMark = String(Character.toChars(0x2705))
+        val bigGrin = String(Character.toChars(0x1F600))
+        val sample = "收到 $checkMark 开工 $bigGrin"
         val store = storeOf()
-        store.setString("draft.text", "收到 ✅ 开工 😀")
+        store.setString("draft.text", sample)
         store.drainIssues()
 
-        assertTrue("正常表情不该被转义成乱码", store.text().contains("😀"))
+        assertTrue("正常表情不该被转义成乱码", store.text().contains(bigGrin))
         val reopened = storeOf(store.text())
-        assertEquals("收到 ✅ 开工 😀", reopened.string("draft.text"))
+        assertEquals(sample, reopened.string("draft.text"))
         assertTrue("正常表情不该出声：${reopened.issues().map { it.detail }}", reopened.issues().isEmpty())
     }
 
@@ -110,9 +117,9 @@ class SettingsStoreTest {
 
     @Test
     fun unicodeEscapeDecodesToSameChar() {
-        val store = storeOf("system.prompt=换行符→\\u000a结束\n")
+        val store = storeOf("system.prompt=换行符到\\u000a结束\n")
 
-        assertEquals("换行符→\n结束", store.string("system.prompt"))
+        assertEquals("换行符到\n结束", store.string("system.prompt"))
     }
 
     @Test
@@ -159,13 +166,17 @@ class SettingsStoreTest {
 
     @Test
     fun badEscapeStaysLiteralAndReports() {
-        val store = storeOf("model.current=尾巴\\q\n")
+        // 反斜杠按码位构造（Char(0x5C)），样本内容不依赖源码里的转义层数。
+        // 这个坑 CI 抓过：整文件重写时手写转义对多落了一层，落盘样本比断言多一根杠，
+        // 测试红了一轮才认账。码位构造让「一根杠」在源码里只有一种写法、没有歧义。
+        val bs = Char(0x5C).toString()
+        val store = storeOf("model.current=尾巴$bs" + "q\n")
 
-        assertEquals("尾巴\\q", store.string("model.current"))
+        assertEquals("尾巴$bs" + "q", store.string("model.current"))
         assertEquals(1, store.issues().count { it is SettingsIssue.BadEscape })
 
-        val trailing = storeOf("model.current=斜杠在尾\\\n")
-        assertEquals("斜杠在尾\\", trailing.string("model.current"))
+        val trailing = storeOf("model.current=斜杠在尾$bs\n")
+        assertEquals("斜杠在尾$bs", trailing.string("model.current"))
         assertEquals(1, trailing.issues().count { it is SettingsIssue.BadEscape })
     }
 

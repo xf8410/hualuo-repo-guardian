@@ -1,0 +1,16 @@
+<!--
+  底栏「长任务」：一只表。外圈是描出来的环，指针是实心一块。
+  24dp 网格，颜色由 Icon 的 tint 给。图形字符不进源码（闸门 NoEmojiInSourceTest）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#000000"
+        android:pathData="M12,2.6a9.4,9.4 0,1 0,0 18.8a9.4,9.4 0,1 0,0 -18.8zM12,4.6a7.4,7.4 0,1 1,0 14.8a7.4,7.4 0,1 1,0 -14.8z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M11.1,7h1.8v5.2l3.5,2.1l-0.9,1.5l-4.4,-2.7z" />
+</vector>

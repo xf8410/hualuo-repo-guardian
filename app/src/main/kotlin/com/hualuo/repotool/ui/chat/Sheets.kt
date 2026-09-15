@@ -46,7 +46,12 @@ import com.hualuo.repotool.ui.theme.Hairline
 import com.hualuo.repotool.ui.theme.Ink
 import com.hualuo.repotool.ui.theme.SubInk
 
-/** 三个原位弹层的总闸：模型 / 本回合工具 / 任务详情（互斥，同原型 closeAll 语义）。 */
+/**
+ * 三个原位弹层的总闸：模型 / 本回合工具 / 任务详情（互斥，同原型 closeAll 语义）。
+ *
+ * 图形字符清零（用户规矩：表情连转义写法都不许进源码）：工具行标签全用文字，
+ * 能力徽章用「可/不可」说清楚；将来要配图走 vector drawable，键名在 IconKey。
+ */
 @Composable
 fun SheetsLayer(state: AppUiState) {
     when {
@@ -105,7 +110,7 @@ private fun ModelSheet(state: AppUiState) {
     }
 }
 
-/** 带图守门（v13.1 新增）：附件行有东西且模型无视觉 → 置灰不可选，点它出声说明。 */
+/** 带图守门（v13.1 新增）：附件行有东西且模型无视觉，置灰不可选，点它出声说明。 */
 private fun ModelRow.visionBlocked(state: AppUiState): Boolean =
     state.thumbs.isNotEmpty() && !hasVision
 
@@ -141,12 +146,12 @@ private fun ModelRowView(state: AppUiState, m: ModelRow) {
         Spacer(Modifier.weight(1f))
         Text("ctx " + m.ctx, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = SubInk)
         Spacer(Modifier.width(6.dp))
-        CapChip("工具" + (if (m.hasTools) "\u2713" else "\u2717"), bad = !m.hasTools)
+        CapChip(if (m.hasTools) "工具可" else "工具不可", bad = !m.hasTools)
         Spacer(Modifier.width(4.dp))
         if (dis) {
-            CapChip("视觉\u2717 \u00B7 带图附件", bad = true)
+            CapChip("视觉不可，带图附件", bad = true)
         } else {
-            CapChip("视觉" + (if (m.hasVision) "\u2713" else "\u2717"), bad = !m.hasVision)
+            CapChip(if (m.hasVision) "视觉可" else "视觉不可", bad = !m.hasVision)
         }
     }
 }
@@ -171,28 +176,28 @@ private fun ToolSheet(state: AppUiState) {
                 modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("\uD83E\uDDE0 思考", fontSize = 14.sp, color = Ink)
+                Text("思考", fontSize = 14.sp, color = Ink)
                 Spacer(Modifier.width(8.dp))
-                Text(if (state.thinkOn) "开 \u00B7 " + listOf("低", "中", "高", "最高")[state.thinkLevel] else "关", fontSize = 12.5.sp, color = SubInk)
+                Text(if (state.thinkOn) "开，档位" + listOf("低", "中", "高", "最高")[state.thinkLevel] else "关", fontSize = 12.5.sp, color = SubInk)
                 Spacer(Modifier.weight(1f))
                 SwitchPill(state.thinkOn) { state.thinkOn = !state.thinkOn }
             }
             if (state.thinkOn) {
                 SegRow(listOf("低", "中", "高", "最高"), state.thinkLevel) { state.thinkLevel = it }
             }
-            ToolSwitchRow("\uD83C\uDF10 网页搜索", state.webSearchOn) { state.webSearchOn = !state.webSearchOn }
-            ToolSwitchRow("\u2328\uFE0F 终端 Shell", state.shellOn) { state.shellOn = !state.shellOn }
+            ToolSwitchRow("网页搜索", state.webSearchOn) { state.webSearchOn = !state.webSearchOn }
+            ToolSwitchRow("终端 Shell", state.shellOn) { state.shellOn = !state.shellOn }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("\u25B6\uFE0F 代码执行", fontSize = 14.sp, color = Ink)
+                Text("代码执行", fontSize = 14.sp, color = Ink)
                 Spacer(Modifier.width(8.dp))
                 CapChip("仅 Gemini", bad = false)
                 Spacer(Modifier.weight(1f))
                 SwitchPill(state.codeExecOn) { state.codeExecOn = !state.codeExecOn }
             }
-            ToolSwitchRow("\uD83D\uDC65 多智能体接力", state.relayOn) { state.relayOn = !state.relayOn }
+            ToolSwitchRow("多智能体接力", state.relayOn) { state.relayOn = !state.relayOn }
         }
     }
 }

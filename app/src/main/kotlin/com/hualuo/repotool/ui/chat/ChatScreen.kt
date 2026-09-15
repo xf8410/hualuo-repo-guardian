@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -27,11 +28,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.ui.components.BadgeChip
 import com.hualuo.repotool.ui.data.DemoMessages
 import com.hualuo.repotool.ui.model.ChatMsg
+import com.hualuo.repotool.ui.model.IconKey
 import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.theme.ErrRed
 import com.hualuo.repotool.ui.theme.Hairline
@@ -40,7 +43,12 @@ import com.hualuo.repotool.ui.theme.MeBubble
 import com.hualuo.repotool.ui.theme.SubInk
 import com.hualuo.repotool.ui.theme.WarnAmber
 
-/** 回合流页（v13 #p-chat)：证据卡列表，滚动只发生在这一列里。 */
+/**
+ * 回合流页（v13 #p-chat)：证据卡列表，滚动只发生在这一列里。
+ *
+ * 图形字符一律走资源（`stringResource(IconKey.X.resId)`）—— 家规，闸门 NoEmojiInSourceTest。
+ * 注意：取值只能发生在组合期，所以点击回调里要用的东西先在外层备好（见 quotePrefix）。
+ */
 @Composable
 fun ChatScreen(state: AppUiState) {
     LazyColumn(
@@ -57,6 +65,10 @@ fun ChatScreen(state: AppUiState) {
 
 @Composable
 private fun MessageCard(state: AppUiState, msg: ChatMsg) {
+    // 组合期备好：点击回调里不能再调 stringResource
+    val quotePrefix = "引用："
+    val expandGlyph = stringResource(IconKey.Expand.resId)
+
     if (msg.fromMe) {
         Box(
             modifier = Modifier
@@ -113,7 +125,8 @@ private fun MessageCard(state: AppUiState, msg: ChatMsg) {
                     .clickable { open = !open }
                     .padding(horizontal = 10.dp, vertical = 7.dp),
             ) {
-                Text(label, fontSize = 12.5.sp, color = SubInk)
+                // 折叠区前缀的小三角：原型是拼在文案里的字符，这里从资源取，外观不变
+                Text("$expandGlyph $label", fontSize = 12.5.sp, color = SubInk)
             }
             if (open && msg.thinkBody != null) {
                 Spacer(Modifier.height(6.dp))
@@ -121,16 +134,21 @@ private fun MessageCard(state: AppUiState, msg: ChatMsg) {
             }
         }
 
-        msg.toolLine?.let {
+        msg.toolLine?.let { line ->
             Spacer(Modifier.height(7.dp))
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(topStart = 0.dp, topEnd = 12.dp, bottomEnd = 12.dp, bottomStart = 0.dp))
                     .background(Color(0xFFF7F9FF))
                     .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(it, fontSize = 12.5.sp, color = Ink)
+                msg.toolIconKey?.let {
+                    Text(stringResource(it.resId), fontSize = 12.5.sp, color = Ink)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(line, fontSize = 12.5.sp, color = Ink)
             }
         }
 
@@ -155,7 +173,7 @@ private fun MessageCard(state: AppUiState, msg: ChatMsg) {
                             .padding(horizontal = 9.dp, vertical = 3.dp),
                     ) {
                         Text(
-                            a.icon + " " + a.label,
+                            stringResource(a.iconKey.resId) + " " + a.label,
                             fontSize = 12.sp,
                             color = if (a.unknown) WarnAmber else SubInk,
                         )
@@ -193,8 +211,10 @@ private fun MessageCard(state: AppUiState, msg: ChatMsg) {
                                 when (op) {
                                     "复制" -> state.toast("已复制原文")
                                     "重新生成" -> state.toast("已按原设置重新生成（演示）")
+                                    // 原先往输入框里塞的是个回头箭头字符；那是要发出去的内容，
+                                    // 改成文字前缀「引用：」，看得清也发得出去
                                     "引用" -> {
-                                        state.input = "\u21AA " + msg.text.take(36) + "\u2026 "
+                                        state.input = quotePrefix + msg.text.take(36) + "…"
                                         state.toast("已引用到输入框")
                                     }
                                     "分享" -> state.toast("分享卡片已生成（演示）")

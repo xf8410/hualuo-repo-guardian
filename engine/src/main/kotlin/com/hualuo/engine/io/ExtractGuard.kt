@@ -27,7 +27,7 @@ import java.util.Locale
  *   4) 跨层控制流只用 `for` + `break`。上一版在 `repeat(3) {}` 里写
  *      `return@percentDecodeName`，那是把函数名当标签用，编译器不认（顶层函数没有隐式标签），
  *      差点又白跑一轮 CI。
- *   5) 条目名里**一个控制字符都不许有**（U+0000–U+001F 与 U+007F），原始名和还原后的名都查。
+ *   5) 条目名里**一个控制字符都不许有**（U+0000 到 U+001F 与 U+007F），原始名和还原后的名都查。
  *      换行能伪造日志行、ESC 能伪造终端输出、制表符让同一条路径在终端里看着是另一条。
  *      正经归档包的文件名不需要同这些字符，所以这里一律硬拒，不留开关、不留"宽容模式"。
  */
@@ -49,8 +49,9 @@ data class ExtractLimits(
         if (maxRatio <= 1.0) throw IllegalArgumentException("压缩比上限必须大于一，现在是 $maxRatio")
     }
 
+    /** 给人看的上限说明。用「不超过」三个字，不用小于等于号：日志与终端里更稳。 */
     fun describe(): String =
-        "条目数≤$maxEntries，单条目≤${maxEntryBytes}字节，总量≤${maxTotalBytes}字节，压缩比≤$maxRatio"
+        "条目数不超过 $maxEntries，单条目不超过 $maxEntryBytes 字节，总量不超过 $maxTotalBytes 字节，压缩比不超过 $maxRatio"
 }
 
 /** 用户可控文本进日志或异常消息之前一律脱敏：控制字符换成点，超过 120 字符截断。 */
@@ -149,7 +150,7 @@ fun normalizeEntryPath(targetRoot: File, rawName: String): File {
     if (destCanon != rootCanon && !destCanon.startsWith(rootCanon + File.separator)) {
         throw ExtractReject(
             "条目落点跑到目标目录外面（多半是符号链接在作怪），拒绝：" +
-                sanitizeForLog(rawName) + " → " + sanitizeForLog(destCanon),
+                sanitizeForLog(rawName) + "，算出的落点 " + sanitizeForLog(destCanon),
         )
     }
     return dest
@@ -165,8 +166,8 @@ private fun File.invariantCanonicalPath(): String =
 /**
  * 有状态的解压配额器：一次解压用一个实例，绝不复用。
  *
- * 用法是硬性的三步，缺一步就不安全：
- *   beginEntry(根目录, 条目名, 压缩前字节) → 边搬边 accept(每次字节数) → endEntry(压缩前字节)
+ * 用法是硬性的三步，缺一步就不安全：先 `beginEntry`（给根目录、条目名、压缩前字节），
+ * 搬运过程中 repeatedly 调 `accept`（每次报这次搬了多少字节），最后 `endEntry`（报压缩前字节）。
  * accept 是"已经打算搬这么多"就先记账再搬，所以越限时连一个字节都不会写出去。
  */
 class ExtractGuard(private val limits: ExtractLimits = ExtractLimits()) {

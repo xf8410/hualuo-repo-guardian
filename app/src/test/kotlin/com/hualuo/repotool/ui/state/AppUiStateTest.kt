@@ -132,7 +132,7 @@ class AppUiStateTest {
     @Test
     fun visionGateBlocksModelWhenAttachmentsPresent() {
         val s = AppUiState()
-        // 演示态起点：附件行有 3 个缩略 → 无视觉模型应被守门（规则在 Sheets.visionBlocked，
+        // 演示态起点：附件行有 3 个缩略，无视觉模型就该被守门（规则在 Sheets.visionBlocked，
         // 这里盯住数据前提：thumbs 非空 + 存在无视觉模型，两边任一被改坏测试就该红）
         assertTrue(s.thumbs.isNotEmpty())
         assertTrue(com.hualuo.repotool.ui.data.DemoModels.any { !it.hasVision })

@@ -43,7 +43,7 @@ import com.hualuo.repotool.ui.theme.SubInk
 
 /**
  * 抽屉（v13 #drawer）：遮罩 + 284dp 左栏。
- * 会话搜索 / 新建 / 管理→多选→删除（带确认框）/ 底部四快捷行直达设置对应分组。
+ * 会话搜索 / 新建 / 管理、多选、删除（带确认框）/ 底部四快捷行直达设置对应分组。
  */
 @Composable
 fun DrawerOverlay(state: AppUiState) {
@@ -70,7 +70,7 @@ fun DrawerOverlay(state: AppUiState) {
                     .padding(horizontal = 12.dp, vertical = 8.dp),
             ) {
                 if (state.convQuery.isEmpty()) {
-                    Text("\uD83D\uDD0D 搜索会话与消息…", fontSize = 13.sp, color = SubInk)
+                    Text("搜索会话与消息…", fontSize = 13.sp, color = SubInk)
                 }
                 BasicTextField(
                     value = state.convQuery,
@@ -106,7 +106,7 @@ fun DrawerOverlay(state: AppUiState) {
                         .clickable { state.newConversation() },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("\uFF0B 新建会话", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("新建会话", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.size(12.dp))
             }
@@ -202,6 +202,7 @@ private fun ConvRow(state: AppUiState, c: Conv) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (state.selecting) {
+            // 选中态就靠实心圆加描边表达，不再往 19dp 的圆里塞对勾字符
             Box(
                 modifier = Modifier
                     .size(19.dp)
@@ -209,9 +210,7 @@ private fun ConvRow(state: AppUiState, c: Conv) {
                     .background(if (sel) Accent else Color.Transparent)
                     .border(2.dp, if (sel) Accent else ChevGray, CircleShape),
                 contentAlignment = Alignment.Center,
-            ) {
-                if (sel) Text("\u2713", color = Color.White, fontSize = 10.sp)
-            }
+            ) {}
             Spacer(Modifier.width(9.dp))
         }
         Column(modifier = Modifier.weight(1f)) {

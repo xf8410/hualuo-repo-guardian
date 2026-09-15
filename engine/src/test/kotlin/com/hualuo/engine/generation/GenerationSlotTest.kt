@@ -230,7 +230,7 @@ class GenerationSlotTest {
 
     @Test
     fun runGuardedStillReleasesWhenUserStoppedMidway() {
-        // 旧仓最隐蔽的一条：用户按停止 → 槽被 stop 腾出 → 新一次生成占位 →
+        // 旧仓最隐蔽的一条：用户按停止，槽被 stop 腾出，新一次生成占位；
         // 旧协程收尾时既不能放掉新槽，也不能让界面停在「还在生成」。
         val slot = GenerationSlot()
         val oldClaim = slot.tryBegin()!!
@@ -247,7 +247,7 @@ class GenerationSlotTest {
         assertFalse(slot.isHolding())
     }
 
-    // ── 槽 ↔ 看门狗 ─────────────────────────────────────────────────────────
+    // ── 槽与看门狗 ──────────────────────────────────────────────────────────
 
     @Test
     fun slotUsesWatchdogAndBeatClearsIt() {

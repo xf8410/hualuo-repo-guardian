@@ -1,0 +1,18 @@
+<!--
+  底栏「观测」：一只眼（只看不动手，正好对上这条红线：对游戏只读）。
+  轮廓描线，瞳心填实。24dp 网格，颜色由 Icon 的 tint 给。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="1.8"
+        android:pathData="M2.6,12C2.6,12 6.2,5.8 12,5.8C17.8,5.8 21.4,12 21.4,12C21.4,12 17.8,18.2 12,18.2C6.2,18.2 2.6,12 2.6,12Z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M12,9.3a2.7,2.7 0,1 0,0 5.4a2.7,2.7 0,1 0,0 -5.4z" />
+</vector>

@@ -6,7 +6,7 @@ name: 自检（每次提交都跑）
 # 失败时必须把完整原因贴进日志和摘要，不许只给一句"失败了"。
 # 检查规则一律写成 [[:space:]] 这种形式，是为了避免"正则匹配到自己这一行"。
 #
-# 记在这儿别再踩的三条：
+# 记在这儿别再踩的四条：
 #   1) jobs 下面的**键名**不能写中文（写成「自检:」会让 GitHub 解析失败：零 job、
 #      日志全空、run 名字退化成文件路径）。中文只能写在给人看的 name: 里。
 #   2) 触发器不要同时"不限分支 push"+"pull_request"，否则每个提交都跑两遍浪费机器。
@@ -15,6 +15,10 @@ name: 自检（每次提交都跑）
 #   3) 行数检查**不许**用 `xargs wc -l`：多文件时 wc 会额外打一行 `total`，
 #      于是"全仓加起来刚过 1000 行"就被当成"某个文件超了 999 行"（真踩过，
 #      报的还是 `1000 total` 这种连文件名都没有的行）。改成逐文件 `wc -l < 文件`。
+#   4) 不要依赖 android-actions/setup-android 装环境：run 34903710256 起它自己崩
+#      （`Failed to find package 'tools'`，sdkmanager 退出码 1），构建一行没跑就红。
+#      ubuntu-latest 本来就带 SDK（ANDROID_HOME 已设），缺的组件让 AGP 自己下。
+#      现在这一步只做"环境在不在"的断言，装不到就报得清清楚楚。
 
 on:
   push:
@@ -49,8 +53,16 @@ jobs:
         with:
           gradle-version: 8.11.1
 
-      - name: 确保安卓编译环境可用（缺的组件由构建自动下载）
-        uses: android-actions/setup-android@v3
+      - name: 确认安卓环境在（不在就直接报错，缺的组件交给构建自己下）
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-（没设）}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-（没设）}"
+          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "$ANDROID_HOME" ]; then
+            echo "运行器里没有安卓 SDK 目录。这一步不猜、不静默装：直接红，去看运行器镜像。"
+            exit 1
+          fi
+          ls "$ANDROID_HOME" | head -20
 
       - name: 红线一 · 禁止构建时改源码
         run: |
@@ -184,7 +196,7 @@ jobs:
               echo '```'
             done
             if [ "$found" -eq 0 ]; then
-              echo "没有任何构建日志，说明挂在红线检查或环境安装阶段——请把上面失败的步骤名和它的日志发我。"
+              echo "没有任何构建日志，说明挂在红线检查或环境检查阶段——请把上面失败的步骤名和它的日志发我。"
             fi
           } | tee "$GITHUB_STEP_SUMMARY"
 

@@ -22,13 +22,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.ui.data.DemoAttachMenu
 import com.hualuo.repotool.ui.data.DemoLoopBar
+import com.hualuo.repotool.ui.data.DemoLoopIcon
 import com.hualuo.repotool.ui.data.DemoQueueBar
+import com.hualuo.repotool.ui.data.DemoQueueIcon
+import com.hualuo.repotool.ui.model.IconKey
 import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
@@ -44,10 +48,26 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
  * 输入区（v13 .composer）：loop/queue 横幅 + 附件缩略行 + 输入框 + 第二排按钮。
- * 原型拍板的三条都在此：语音在聊天框（不在设置）、模型切换在输入区原位弹层、生成中发送钮变红 ■。
+ * 原型拍板的三条都在此：语音在聊天框（不在设置）、模型切换在输入区原位弹层、生成中发送钮变红方块。
+ *
+ * 图形字符一律走资源（`stringResource(IconKey.X.resId)`）—— 家规，闸门 NoEmojiInSourceTest。
+ * 缩略列表存的是 IconKey 键名字符串，解不出键就照原样显示并染成警告色，不许悄悄换成别的图标。
  */
 @Composable
 fun Composer(state: AppUiState) {
+    val loopGlyph = stringResource(DemoLoopIcon.resId)
+    val queueGlyph = stringResource(DemoQueueIcon.resId)
+    val stopGlyph = stringResource(IconKey.ActionStop.resId)
+    val crossGlyph = stringResource(IconKey.Cross.resId)
+    val plusGlyph = stringResource(IconKey.Plus.resId)
+    val dotsGlyph = stringResource(IconKey.DotsV.resId)
+    val dotGlyph = stringResource(IconKey.Dot.resId)
+    val micGlyph = stringResource(IconKey.Mic.resId)
+    val sendGlyph = stringResource(IconKey.SendArrow.resId)
+    val observeGlyph = stringResource(IconKey.ActionObserve.resId)
+    val caretDownGlyph = stringResource(IconKey.CaretDown.resId)
+    val expandScreenGlyph = stringResource(IconKey.ExpandScreen.resId)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -65,10 +85,10 @@ fun Composer(state: AppUiState) {
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(DemoLoopBar, fontSize = 12.sp, color = LoopInk)
+                Text("$loopGlyph $DemoLoopBar", fontSize = 12.sp, color = LoopInk)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "\u25A0 \u505C",
+                    "$stopGlyph 停",
                     fontSize = 12.sp,
                     color = ErrRed,
                     fontWeight = FontWeight.SemiBold,
@@ -89,10 +109,10 @@ fun Composer(state: AppUiState) {
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(DemoQueueBar, fontSize = 12.sp, color = Accent)
+                Text("$queueGlyph $DemoQueueBar", fontSize = 12.sp, color = Accent)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "移除 \u00D7",
+                    "移除 $crossGlyph",
                     fontSize = 12.sp,
                     color = Accent,
                     modifier = Modifier.clickable { state.queueBarOn = false },
@@ -105,7 +125,8 @@ fun Composer(state: AppUiState) {
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                state.thumbs.forEachIndexed { i, icon ->
+                state.thumbs.forEachIndexed { i, keyName ->
+                    val iconKey = IconKey.fromKey(keyName)
                     Box(modifier = Modifier.size(44.dp)) {
                         Box(
                             modifier = Modifier
@@ -114,7 +135,16 @@ fun Composer(state: AppUiState) {
                                 .background(ThumbBg),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(icon, fontSize = 19.sp, color = if (icon == "\u2753") WarnAmber else Ink)
+                            if (iconKey == null) {
+                                // 键名解不出来：照原样显示并染警告色，不猜图标
+                                Text(keyName, fontSize = 10.sp, color = WarnAmber)
+                            } else {
+                                Text(
+                                    stringResource(iconKey.resId),
+                                    fontSize = 19.sp,
+                                    color = if (iconKey == IconKey.Question) WarnAmber else Ink,
+                                )
+                            }
                         }
                         Box(
                             modifier = Modifier
@@ -125,7 +155,7 @@ fun Composer(state: AppUiState) {
                                 .clickable { state.removeThumb(i) },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text("\u00D7", color = Color.White, fontSize = 10.sp)
+                            Text(crossGlyph, color = Color.White, fontSize = 10.sp)
                         }
                     }
                 }
@@ -151,7 +181,7 @@ fun Composer(state: AppUiState) {
                 )
             }
             Text(
-                "\u26F6",
+                expandScreenGlyph,
                 fontSize = 15.sp,
                 color = Accent,
                 modifier = Modifier
@@ -170,22 +200,23 @@ fun Composer(state: AppUiState) {
                     .border(1.dp, Bg, RoundedCornerShape(14.dp))
                     .padding(6.dp),
             ) {
-                DemoAttachMenu.forEach { item ->
-                    Text(
-                        item,
-                        fontSize = 13.5.sp,
-                        color = Ink,
+                DemoAttachMenu.forEach { (iconKey, label) ->
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(9.dp))
                             .clickable {
-                                val icon = item.substringBefore(' ')
-                                state.addThumb(icon)
+                                state.addThumb(iconKey.name)
                                 state.addMenuOpen = false
-                                state.toast("已添加附件（演示）：" + item.substringAfter(' '))
+                                state.toast("已添加附件（演示）：" + label)
                             }
                             .padding(horizontal = 12.dp, vertical = 9.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(stringResource(iconKey.resId), fontSize = 13.5.sp, color = Ink)
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, fontSize = 13.5.sp, color = Ink)
+                    }
                 }
             }
         }
@@ -197,7 +228,7 @@ fun Composer(state: AppUiState) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Pill("\uFF0B 附件") { state.addMenuOpen = !state.addMenuOpen }
+            Pill("$plusGlyph 附件") { state.addMenuOpen = !state.addMenuOpen }
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
@@ -211,22 +242,22 @@ fun Composer(state: AppUiState) {
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 Text(
-                    "\u25C9 " + state.currentModel + " \u25BE",
+                    "$observeGlyph " + state.currentModel + " $caretDownGlyph",
                     fontSize = 12.5.sp,
                     color = Accent,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            Pill("\u22EE 工具") {
+            Pill("$dotsGlyph 工具") {
                 state.addMenuOpen = false
                 state.modelSheetOpen = false
                 state.taskSheetKey = null
                 state.toolSheetOpen = !state.toolSheetOpen
             }
             if (state.micOn) {
-                Pill("\u25CF 松开发送", red = true) { state.micOn = false }
+                Pill("$dotGlyph 松开发送", red = true) { state.micOn = false }
             } else {
-                Pill("\uD83C\uDFA4") {
+                Pill(micGlyph) {
                     state.micOn = true
                     state.toast("录音中…（松开发送为演示态）")
                 }
@@ -240,7 +271,7 @@ fun Composer(state: AppUiState) {
                     .clickable { state.busy = !state.busy },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(if (state.busy) "\u25A0" else "\u27A4", color = Color.White, fontSize = 16.sp)
+                Text(if (state.busy) stopGlyph else sendGlyph, color = Color.White, fontSize = 16.sp)
             }
         }
     }

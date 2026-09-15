@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -52,19 +51,27 @@ import com.hualuo.repotool.ui.theme.CardBg
 import com.hualuo.repotool.ui.theme.ChevGray
 import com.hualuo.repotool.ui.theme.ErrRed
 import com.hualuo.repotool.ui.theme.Hairline
-import com.hualuo.repotool.ui.theme.IconTile
 import com.hualuo.repotool.ui.theme.Ink
 import com.hualuo.repotool.ui.theme.SubInk
 
 /**
- * 设置层（v13 #settings + #sub）：主页 8 组 27 项 + 子页栈。
- * 主页搜索框实时过滤（组内无命中则整组隐藏）；← 逐级返回（对应 SUBSTACK pop）。
+ * 设置层（#settings + #sub）：主页分组 + 子页栈，**全部用文字，不画图形字符**。
+ *
+ * 为什么去掉图标（用户 2026-09-15 拍板）：原版界面无表情；一排小图标对认路没用，
+ * 反而挤掉正事 —— 每一项那句大白话。撤掉图标之后标题与说明能占满整行，读起来省劲。
+ * 数据模型里的 iconKey 先留着不渲染，将来要图标走 vector drawable，那是独立一次设计。
+ *
+ * 主页搜索框实时过滤（组内无命中则整组隐藏）；「返回」两个字逐级返回（对应子页栈 pop）。
  *
  * 两类开关要分清：演示态 `SubField.Switch` 的状态只活在本次 remember 里（照原型搬来的行，
  * 退出即丢）；真设置 `SubField.PersistedSwitch` 走 `AppUiState` 的按键名通道，改完立刻落盘，
  * 关掉 App 再开还在。挂不上组的真设置项由 `orphanAdditions()` 在这一页顶部喊出来。
  *
  * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
+ *
+ * 家规提醒：单选圆环的 Modifier.size 之前缺 layout.size 的 import，红在 app 编译段
+ * （run 34969369167 抓到）。engine 一直先红导致这颗雷压了十几轮没人看见 —— 谁改了布局
+ * 调用就当场把 import 带上，别赌"反正后面模块编译不到"。
  */
 @Composable
 fun SettingsOverlay(state: AppUiState) {
@@ -77,19 +84,18 @@ fun SettingsOverlay(state: AppUiState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
+                .padding(start = 14.dp, end = 14.dp, top = 13.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(CardBg)
-                    .border(1.dp, Hairline, CircleShape)
-                    .clickable { state.backFromSettings() },
-                contentAlignment = Alignment.Center,
+                    .border(1.dp, Hairline, RoundedCornerShape(10.dp))
+                    .clickable { state.backFromSettings() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
-                Text("\u2190", fontSize = 16.sp, color = Ink)
+                Text("返回", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.Medium)
             }
             Spacer(Modifier.width(12.dp))
             Text(
@@ -104,14 +110,12 @@ fun SettingsOverlay(state: AppUiState) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(CardBg)
                     .padding(horizontal = 14.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("\uD83D\uDD0D", fontSize = 14.sp, color = SubInk)
-                Spacer(Modifier.width(8.dp))
                 Box(modifier = Modifier.weight(1f)) {
                     if (state.settingsQuery.isEmpty()) {
                         Text("搜设置，比如「代理」「备份」", fontSize = 14.sp, color = SubInk)
@@ -194,19 +198,10 @@ private fun SettingsItemRow(state: AppUiState, item: SettingsItem) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(IconTile),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(item.icon, fontSize = 17.sp)
-        }
-        Spacer(Modifier.width(12.dp))
+        // 原来这里是一枚 36dp 的图标方块：撤掉，标题与说明占满整行
         Column(modifier = Modifier.weight(1f)) {
-            Text(item.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = Ink)
-            Text(item.desc, fontSize = 11.5.sp, color = SubInk)
+            Text(item.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Text(item.desc, fontSize = 12.sp, color = SubInk, lineHeight = 17.sp)
         }
         if (item.subKey == "title") {
             SwitchPill(sw) { sw = !sw }
@@ -221,7 +216,6 @@ private fun SettingsItemRow(state: AppUiState, item: SettingsItem) {
                     modifier = Modifier.width(92.dp),
                 )
             }
-            Text("\u203A", color = ChevGray, fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp))
         }
     }
 }
@@ -263,11 +257,12 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                     if (f.gotoKey != null) {
                         val goto = f.gotoKey
                         Text(
-                            "\u203A",
-                            color = ChevGray,
-                            fontSize = 14.sp,
+                            "打开",
+                            fontSize = 12.sp,
+                            color = Accent,
                             modifier = Modifier
-                                .padding(start = 6.dp)
+                                .padding(start = 8.dp)
+                                .clip(RoundedCornerShape(6.dp))
                                 .clickable { state.subStack = state.subStack + goto },
                         )
                     }
@@ -337,8 +332,7 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
                 )
                 is SubField.Action -> FRow {
-                    Text(f.icon, fontSize = 17.sp, color = Accent)
-                    Spacer(Modifier.width(12.dp))
+                    // 动作卡原先左侧那枚图形不画了：标题与描述本来就说得清是什么动作
                     Column(modifier = Modifier.weight(1f)) {
                         Text(f.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = Ink)
                         Text(f.desc, fontSize = 12.5.sp, color = SubInk, lineHeight = 19.sp)
@@ -402,27 +396,22 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            // 单选指示：用圆环加文字，不靠颜色也不靠图形字符
                             Box(
                                 modifier = Modifier
-                                    .size(22.dp)
-                                    .clip(CircleShape)
-                                    .border(2.dp, if (on) Accent else ChevGray, CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (on) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(12.dp)
-                                            .clip(CircleShape)
-                                            .background(Accent),
-                                    )
-                                }
-                            }
+                                    .size(18.dp)
+                                    .border(
+                                        width = if (on) 5.dp else 1.5.dp,
+                                        color = if (on) Accent else ChevGray,
+                                        shape = RoundedCornerShape(9.dp),
+                                    ),
+                            )
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(c.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Ink)
                                 Text(c.desc, fontSize = 12.5.sp, color = SubInk)
                             }
+                            if (c.needsKey) Text("需密钥", fontSize = 11.sp, color = SubInk)
                         }
                     }
                 }
