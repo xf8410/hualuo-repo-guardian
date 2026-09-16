@@ -34,7 +34,9 @@ sealed class ChatRunResult {
  *
  * 红线（与 RetryPolicy 的文案一一对应，不是口号）：
  *  1) 花钱请求收到过内容字节，绝不自动盲重；
- *  2) 上下文超限永不重发（证据在体里，与状态码无关）；
+ *  2) 上下文超限永不重发（证据在体里，与状态码无关）——网关拿 502 包着
+ *     "Your input exceeds the context window" 也一样：RetryPolicy 靠 body 关键词定性，
+ *     这层只负责把「中文出路 + 对方原话证据」完完整整交到界面上；
  *  3) 任何收场都放槽（runGuarded 兜底，被顶替走 stranded 单独出声）。
  *
  * 线程模型：[run] 设计给**后台线程**调用（内部阻塞读流 + sleeper 等待）；
@@ -200,7 +202,13 @@ class ChatWireRunner(
     /** 决策表的 GiveUp 翻译成界面能用的错：出路以决策理由为准，供应商原话最多当线索。 */
     private fun toError(klass: FailureClass, reason: String, bundle: AttemptBundle): GenerationError = when {
         klass == FailureClass.Cancelled -> GenerationError.Cancelled
-        klass == FailureClass.ContextOverflow -> GenerationError.Api(null, null, reason)
+        klass == FailureClass.ContextOverflow ->
+            // 出路话走 Transport 的「上下文超限」分支（中文出路指删历史/开新会话）；
+            // 对方的错误体原文当证据带上（ProviderHttpError 出来的已打过码），
+            // 没有 body 原文就给空 detail——出路话自己站得住。
+            // 之前塞 Api(null,null,reason) 的毛病：证据（"Your input exceeds…"）被丢在半路，
+            // 出路话只剩决策层那句，人对不上是哪一条内容撑爆的。
+            GenerationError.Transport(FailureClass.ContextOverflow, bundle.apiError?.message ?: "")
         bundle.outcome.status >= 400 ->
             GenerationError.Network(bundle.outcome.status, bundle.apiError?.message ?: reason)
         else -> GenerationError.Transport(klass, reason)

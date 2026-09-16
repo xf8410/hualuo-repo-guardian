@@ -50,7 +50,8 @@ import com.hualuo.repotool.ui.theme.WarnAmber
  * 输入区（v13 .composer）：loop/queue 横幅 + 附件缩略行 + 输入框 + 第二排按钮。
  * 原型拍板的三条都在此：语音在聊天框（不在设置）、模型切换在输入区原位弹层、生成中发送钮变红方块。
  *
- * 发送钮接的是真电（09-15 拍板「不要是摆设」）：空闲时把草稿交给 ChatRuntime 真发，
+ * 发送钮接的是真电（09-15 拍板「不要是摆设」）：空闲时把草稿交给状态层 [AppUiState.sendCurrentInput]
+ * 真发（空文出声、单条上限、清草稿都在那一处管，纯 JVM 可测），
  * 生成中变红方块、按下掐这条自己的连接；忙灯从 state.busy 读，而 busy 就是 runtime 的事实。
  *
  * 图形字符一律走资源（`stringResource(IconKey.X.resId)`）—— 家规，闸门 NoEmojiInSourceTest。
@@ -275,12 +276,9 @@ fun Composer(state: AppUiState) {
                         if (state.busy) {
                             // 生成中的红方块=停止：掐这一条自己的连接，已收的半截留在卡上
                             state.chat.stop()
-                        } else if (state.input.isBlank()) {
-                            state.toast("没内容可发")
                         } else {
-                            state.chat.send(state.input, state.currentModel)
-                            // 发出去草稿就该清（清这个动作本身也会记进设置文件，防重开又冒出来）
-                            state.input = ""
+                            // 空文出声、单条上限、清草稿都收进状态层一处（纯 JVM 可测），按钮只管叫
+                            state.sendCurrentInput()
                         }
                     },
                 contentAlignment = Alignment.Center,

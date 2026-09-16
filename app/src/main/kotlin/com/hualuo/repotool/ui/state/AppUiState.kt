@@ -125,6 +125,29 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
     val busy: Boolean get() = chat.busy
 
+    /**
+     * 发送钮的统一入口（Composer 只管叫，规矩收在状态层一处，纯 JVM 可测）：
+     *  - 空草稿不空发，出声说明；
+     *  - 超过 [MAX_PROMPT_CHARS] 字符拒发——单条超大粘贴是把上下文窗口顶爆的最快方式。
+     *    这道闸按字符管「单条」，ChatRuntime 的 40 条护栏按条数管「总量」，各补各的盲区；
+     *    上限是保守的工程值不是 token 精算——客户端算不准各家的窗口，
+     *    能算准且必须做的是「不许无限大」+ 真超限时报中文出路（见 GenerationError）。
+     *  - 过了闸才交 [chat.send]，发出去草稿清空（清动作本身也记设置文件，防重开冒草稿）。
+     */
+    fun sendCurrentInput() {
+        val text = input
+        if (text.isBlank()) {
+            toast("没内容可发")
+            return
+        }
+        if (text.length > MAX_PROMPT_CHARS) {
+            toast("这条 ${text.length} 字，超了单条上限 $MAX_PROMPT_CHARS：拆开发送或先精简，别拿大粘贴赌对方的窗口")
+            return
+        }
+        chat.send(text, currentModel)
+        input = ""
+    }
+
     // ── 仍是演示态的字段 ────────────────────────────────────────────────────
 
     /** 版本串由入口注入（BuildConfig 读自 version.properties 单源），界面里不许写死。 */
@@ -277,5 +300,11 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     companion object {
         /** 没设置过时的默认模型（真接线后由模型清单决定，这里只是不空着）。 */
         const val DEFAULT_MODEL = "qwen3.8-flash"
+
+        /**
+         * 单条消息字符上限。选 5 万的理由：几万字的整篇粘贴对几乎所有对话模型都还在
+         * 窗口内，但一 MB 级的整文件直塞必炸——闸门拦的是「事故」不是「长文」。
+         */
+        const val MAX_PROMPT_CHARS = 50_000
     }
 }

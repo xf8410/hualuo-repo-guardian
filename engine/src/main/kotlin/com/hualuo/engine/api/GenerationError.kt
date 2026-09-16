@@ -8,6 +8,8 @@ import com.hualuo.engine.http.FailureClass
  *
  * 分类的价值在于**不同错给不同出路**：401 是去改密钥、429 是等一会儿、404 是 base 或模型名写错、
  * 断流是"这段回答不完整别当成品"。全塞成一句"请求失败"就等于没分类。
+ * 界面与决策层（RetryPolicy 的 reason）里给用户看的句子**一律中文**——错误码可以原样带上
+ * （502、context_length_exceeded 这些是排查线索），但「下一步动哪里」必须是中文说清。
  *
  * 原版四问题（都在这版修掉）：
  *  1. 提示语全是英文，而这个 App 的界面是中文 —— 直接搬过来你会看到一句英文报错。
@@ -109,7 +111,12 @@ sealed class GenerationError {
             FailureClass.Cancelled -> "你按了停止，这次不算失败，也不会替你重发"
             FailureClass.NoConnection -> "没连上对方：${brief(detail)}。检查网络，再核对「提供商」里的 base URL 写得对不对"
             FailureClass.Stalled -> "连接卡住了：${brief(detail)}。要是内容已经出过一部分，别整条盲重发（会重复内容、再花一遍钱）"
-            FailureClass.ContextOverflow -> "上下文超限：删掉部分历史或开新会话再发；重发同一份内容只会再错一次"
+            // 网关 502/400 包着 "Your input exceeds the context window" 时走的是这里：
+            // 出路固定是「删历史/开新会话」，绝不许说成"稍后重试"——重发同一份只会再错一次。
+            // detail 是对方错误体原文（已打码），留它当证据，人对得上是哪段内容撑爆的。
+            FailureClass.ContextOverflow ->
+                if (detail.isBlank()) "上下文超限：删掉部分历史或开新会话再发；重发同一份内容只会再错一次"
+                else "上下文超限：删掉部分历史或开新会话再发，别重发同一份。对方原话：「${brief(detail)}」"
             else -> "网络出错（$failure）：${brief(detail)}"
         }
         // 修：不再只给一句"解析失败"，带上截断脱敏后的原文片段

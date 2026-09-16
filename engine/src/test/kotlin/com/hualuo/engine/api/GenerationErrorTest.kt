@@ -1,11 +1,13 @@
 package com.hualuo.engine.api
 
+import com.hualuo.engine.http.FailureClass
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * [GenerationError] 的账：分类必须**各给各的出路**，而且**任何一条都不许把密钥原样吐给人看**。
+ * 出路话一律中文（错误码/原话可以带英文，那是线索不是文案）。
  */
 class GenerationErrorTest {
 
@@ -127,5 +129,25 @@ class GenerationErrorTest {
         val masked = maskSecrets(text)
         assertFalse(masked.contains("claude-3-5-sonnet-20240620"))
         assertTrue("短名字不受影响", maskSecrets("model gpt-4o not found") == "model gpt-4o not found")
+    }
+
+    @Test
+    fun gatewayContextOverflowGetsChineseGuidanceAndKeepsEvidence() {
+        // 用户实收样本：网关拿 502 包着超限原文。定性在 HttpTaxonomy（body 关键词），
+        // 这里钉的是「翻成给人看的那句」的规矩：中文出路 + 对方原话当证据。
+        val message = GenerationError.Transport(
+            FailureClass.ContextOverflow,
+            "502 [upstream_error]: Your input exceeds the context window of this model.",
+        ).userMessage()
+        assertTrue("出路必须是删历史/开新会话：$message", message.contains("开新会话"))
+        assertTrue("不许再教人重试：$message", message.contains("别重发"))
+        assertTrue("对方原话是证据，得留下：$message", message.contains("context window"))
+    }
+
+    @Test
+    fun contextOverflowWithoutEvidenceStillSaysTheWayOut() {
+        val message = GenerationError.Transport(FailureClass.ContextOverflow, "").userMessage()
+        assertTrue("没原话也要把出路说全：$message", message.contains("开新会话"))
+        assertFalse("没证据就不许空引号装样子：$message", message.contains("「」"))
     }
 }
