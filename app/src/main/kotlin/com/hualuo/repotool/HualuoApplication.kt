@@ -1,6 +1,9 @@
 package com.hualuo.repotool
 
 import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.state.UiPersistenceBundle
 import com.hualuo.repotool.ui.state.createUiPersistence
@@ -44,4 +47,12 @@ class HualuoApplication : Application() {
 
     /** 启动通知取走即没：进程活着时只出一次声，重建不再复读。 */
     fun consumeStartupNotice(): String? = startupNotice.consume()
+
+    /**
+     * 长活进度行（0.6.0）：「正在打包 2/7 份会话」「已读 5 份」这类。
+     * 挂进程不挂界面——备份跑几分钟，Activity 重建（转屏/切出）进度行不许丢。
+     * 备份线程写、界面读（Compose 快照线程安全）；动作收尾必须写 null 收行，
+     * 不许挂着上一次的旧账骗人。
+     */
+    var backupProgress by mutableStateOf<String?>(null)
 }

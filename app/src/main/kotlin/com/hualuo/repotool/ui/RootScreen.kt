@@ -88,9 +88,10 @@ private val BusyBarAlpha = 0.55f
  * 上面盖抽屉、设置层、弹层、toast。所有浮层都是「壳内」的 Box 层：
  * 外壳锁高、滚动只发生在各层内部（原型漂移病的根治，Compose 版同方）。
  *
- * **状态挂进程不挂界面（0.6.0）**：AppUiState 从 HualuoApplication（进程单例）拿，
- * 不再 remember 新建——切出 App（回桌面/转屏）让 Activity 重建时，拿到的是**同一个**
- * 状态实例：生成中的流照跑、半截话和忙灯原样接上。「切出去对话就停/失败」的病根。
+ * **状态挂进程不挂界面（0.6.0）**：AppUiState 与备份进度行都从 HualuoApplication
+ * （进程单例）拿，不再 remember 新建——切出 App（回桌面/转屏）让 Activity 重建时，
+ * 拿到的是**同一个**状态实例：生成中的流照跑、半截话和忙灯原样接上；备份跑几分钟
+ * 进度行也不丢。「切出去对话就停/失败」的病根。
  * remember(kernel) 只是防重组期反复取值，实例本身不依赖它。
  *
  * 图形一律 vector drawable（用户拍板：UI 不是表情，要画图）。tint 走主题色：
@@ -105,9 +106,10 @@ private val BusyBarAlpha = 0.55f
  * 会话落盘的岔子（storeIssue）同规矩：写不进就是「重开就丢」，必须出声。
  *
  * 备份（数据控制）的桥也架在这里：设置子页的按钮只发动作请求（state.pendingDataAction），
- * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult，选择器结果回来后
- * 网关在后台线程流式进出、状态层走活通道应用，各管一段（主线程做大会计 IO 是
- * ANR/闪退病根，0.5.0 根治）。
+ * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult。选择器结果回来后
+ * 网关在后台线程流式进出，进度经 kernel.backupProgress（进程级）画在顶栏下面，
+ * 收尾必须写 null 收行；结果走状态层活通道应用并出声，各管一段（主线程做大会计
+ * IO 是 ANR/闪退病根，0.5.0 根治；黑盒等待是 0.6.0 根治）。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -129,8 +131,13 @@ fun HualuoApp(versionLabel: String) {
         }
         state.toast("正在打包备份……")
         Thread({
-            val failure = runCatching { BackupGateway.exportTo(context, uri, state.versionLabel) }
-                .getOrElse { "导出失败：${it.message ?: "写不进去"}" }
+            kernel.backupProgress = "正在打包备份……"
+            val failure = runCatching {
+                BackupGateway.exportTo(context, uri, state.versionLabel) { done, total ->
+                    kernel.backupProgress = "正在打包 $done/$total 份会话"
+                }
+            }.getOrElse { "导出失败：${it.message ?: "写不进去"}" }
+            kernel.backupProgress = null
             state.toast(failure ?: "备份已导出（设置 + 全部会话）")
             state.clearPendingDataAction()
         }, "hualuo-backup").start()
@@ -144,13 +151,18 @@ fun HualuoApp(versionLabel: String) {
         }
         state.toast("正在导入备份……")
         Thread({
-            val outcome = runCatching { BackupGateway.readImport(context, uri) }
-                .getOrElse {
-                    BackupGateway.ImportedBackup(
-                        false, null, 0, 0,
-                        listOf("读不了这个文件：${it.message ?: "打不开"}"),
-                    )
+            kernel.backupProgress = "正在导入备份……"
+            val outcome = runCatching {
+                BackupGateway.readImport(context, uri) { done ->
+                    kernel.backupProgress = "已读 $done 份会话……"
                 }
+            }.getOrElse {
+                BackupGateway.ImportedBackup(
+                    false, null, 0, 0,
+                    listOf("读不了这个文件：${it.message ?: "打不开"}"),
+                )
+            }
+            kernel.backupProgress = null
             state.toast(state.applyImportedBackup(outcome))
             state.clearPendingDataAction()
         }, "hualuo-import").start()
@@ -164,13 +176,18 @@ fun HualuoApp(versionLabel: String) {
         }
         state.toast("正在读旧 Agora 备份……")
         Thread({
-            val outcome = runCatching { BackupGateway.readAgoraImport(context, uri) }
-                .getOrElse {
-                    BackupGateway.AgoraImportOutcome(
-                        false, null, 0, 0,
-                        "读不了这个文件：${it.message ?: "打不开"}",
-                    )
+            kernel.backupProgress = "正在读旧 Agora 备份……"
+            val outcome = runCatching {
+                BackupGateway.readAgoraImport(context, uri) { done, total ->
+                    kernel.backupProgress = "正在落盘 $done/$total 份会话"
                 }
+            }.getOrElse {
+                BackupGateway.AgoraImportOutcome(
+                    false, null, 0, 0,
+                    "读不了这个文件：${it.message ?: "打不开"}",
+                )
+            }
+            kernel.backupProgress = null
             state.toast(state.applyAgoraImport(outcome))
             state.clearPendingDataAction()
         }, "hualuo-agora").start()
@@ -233,6 +250,17 @@ fun HualuoApp(versionLabel: String) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopBar(state)
+                // 长活进度行（备份导出/导入/兑换）：内核持有，Activity 重建不丢
+                kernel.backupProgress?.let { progress ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CardBg)
+                            .padding(horizontal = 14.dp, vertical = 5.dp),
+                    ) {
+                        Text(progress, fontSize = 11.5.sp, color = SubInk)
+                    }
+                }
                 // 生成中的细忙条：状态挂进程后切出去也照跑，回来这条还在（或已经没了）
                 if (state.busy) {
                     Box(

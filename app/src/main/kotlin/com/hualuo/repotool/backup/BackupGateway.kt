@@ -26,7 +26,10 @@ import java.io.InputStreamReader
  * 这里绕过它直接写文件，活通道一次 flush 就会把新值盖掉（两份事实的老病）。
  * 所以设置原文/兑换单由 [readImport] / [readAgoraImport] 带回，交给 AppUiState 的活通道去进。
  *
- * 三个函数都用**块体**：体里有 `return` 提前退场，表达式体（= try {...}）禁止 return——
+ * 进度（0.6.0）：三个函数各带 onProgress（默认空实现，老调用方零改动），
+ * 由后台线程转成界面进度行——大会计备份不许是黑盒。
+ *
+ * 全部函数都用**块体**：体里有 `return` 提前退场，表达式体（= try {...}）禁止 return——
  * CI 编译段连抓两次（run 35097435110 抓 engine，紧接着这轮抓这里）。谁要改成表达式体，
  * 先把里面的 return 全拔掉，别赌编译器放行。
  */
@@ -51,7 +54,12 @@ object BackupGateway {
     )
 
     /** 导出：设置文件原文 + 会话仓全部 jsonl，zip 流式写进系统给的输出流。返回 null = 成。 */
-    fun exportTo(context: Context, uri: Uri, appVersion: String): String? {
+    fun exportTo(
+        context: Context,
+        uri: Uri,
+        appVersion: String,
+        onProgress: (doneSessions: Int, totalSessions: Int) -> Unit = { _, _ -> },
+    ): String? {
         return try {
             val settingsFile = File(context.filesDir, SETTINGS_RELATIVE_PATH)
             val settingsText = if (settingsFile.isFile) readTextBounded(settingsFile, MAX_SETTINGS_CHARS) else ""
@@ -63,7 +71,7 @@ object BackupGateway {
                 ?: emptyList()
             val out = context.contentResolver.openOutputStream(uri)
                 ?: return "备份写不进去（系统没给输出流）：换个位置再试一次"
-            out.use { writeBackup(it, settingsText, sources, appVersion) }
+            out.use { writeBackup(it, settingsText, sources, appVersion, onProgress) }
             null
         } catch (e: Exception) {
             "导出失败：${e.message ?: "写出错了"}"
@@ -73,8 +81,13 @@ object BackupGateway {
     /**
      * 读一个本家包：会话现场落盘（重名跳过、原文件保留）；设置只带回原文。
      * manifest 条目在包里排最前（写方钉死的顺序），所以会话回调时身份一定已判完。
+     * [onProgress]：每处理完一条会话（收进或跳过都算）报一次已处理数。
      */
-    fun readImport(context: Context, uri: Uri): ImportedBackup {
+    fun readImport(
+        context: Context,
+        uri: Uri,
+        onProgress: (handledSessions: Int) -> Unit = {},
+    ): ImportedBackup {
         return try {
             val sessionsDir = File(context.filesDir, SESSIONS_DIR_NAME).apply { mkdirs() }
             var manifest: BackupManifest? = null
@@ -89,6 +102,7 @@ object BackupGateway {
                     if (known == null || known.format != BACKUP_FORMAT) {
                         // 身份还没判过或对不上：这条会话不收（引擎会把剩余字节排干）
                         skipped += 1
+                        onProgress(imported + skipped)
                         return@readBackup
                     }
                     val target = File(sessionsDir, "$id.jsonl")
@@ -98,6 +112,7 @@ object BackupGateway {
                         target.outputStream().use { streamingCopy(sessionStream, it) }
                         imported += 1
                     }
+                    onProgress(imported + skipped)
                 }
             }
             manifest = result.manifest
@@ -127,8 +142,13 @@ object BackupGateway {
     /**
      * 读一个旧 Agora 包（.agora）：流式过引擎兑换单；会话在这里落盘
      * （id 带 agora- 前缀、重名跳过原文件保留），设置兑给活通道，媒体/任务带不过来的账在 plan.notes。
+     * [onProgress]：会话逐份落盘时报（已落, 总数）——大包最后一步也看得见在动。
      */
-    fun readAgoraImport(context: Context, uri: Uri): AgoraImportOutcome {
+    fun readAgoraImport(
+        context: Context,
+        uri: Uri,
+        onProgress: (doneSessions: Int, totalSessions: Int) -> Unit = { _, _ -> },
+    ): AgoraImportOutcome {
         return try {
             val stream = context.contentResolver.openInputStream(uri)
                 ?: return AgoraImportOutcome(false, null, 0, 0, "读不到这个文件（系统没给输入流）")
@@ -140,7 +160,8 @@ object BackupGateway {
             val store = SessionStore(sessionsDir)
             var imported = 0
             var skipped = 0
-            for (s in plan.sessions) {
+            val total = plan.sessions.size
+            for ((index, s) in plan.sessions.withIndex()) {
                 if (store.exists(s.id)) {
                     skipped += 1
                 } else if (store.writeSession(s.id, s.head, s.messages)) {
@@ -148,6 +169,7 @@ object BackupGateway {
                 } else {
                     skipped += 1
                 }
+                onProgress(index + 1, total)
             }
             AgoraImportOutcome(true, plan, imported, skipped, null)
         } catch (e: Exception) {

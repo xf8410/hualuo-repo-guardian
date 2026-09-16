@@ -66,12 +66,16 @@ fun isSafeSessionId(id: String): Boolean {
 /**
  * 写一个备份包（zip，纯 JVM，流式：设置与会话都是边读边写，永不整文件进内存）。
  * 条目顺序钉死 manifest 最前——读包的一方必须先看到身份，才轮得到决定收不收会话。
+ *
+ * [onProgress]（0.6.0）：每写完一份会话回调一次（已写份数, 总份数）。大会计备份
+ * 不能是黑盒——界面拿它画「已打包 N/M 份会话」。默认空实现，老调用方零改动。
  */
 fun writeBackup(
     out: OutputStream,
     settingsText: String,
     sessions: List<BackupSessionSource>,
     appVersion: String,
+    onProgress: (doneSessions: Int, totalSessions: Int) -> Unit = { _, _ -> },
 ) {
     val bad = sessions.firstOrNull { !isSafeSessionId(it.id) }
     if (bad != null) {
@@ -93,10 +97,11 @@ fun writeBackup(
         streamingCopyOfText(settingsText, zip)
         zip.closeEntry()
 
-        sessions.forEach { source ->
+        sessions.forEachIndexed { index, source ->
             zip.putNextEntry(ZipEntry(SESSIONS_PREFIX + source.id + ".jsonl"))
             source.open().use { streamingCopy(it, zip) }
             zip.closeEntry()
+            onProgress(index + 1, sessions.size)
         }
     }
 }
@@ -105,9 +110,18 @@ fun writeBackup(
  * 读一个备份包（单趟流式）：设置读进内存（有界，1MiB 帽）；会话条目把原始流交给
  * [onSession] 现场落盘——回调结束后引擎负责把这条 entry 的剩余字节排干，
  * 调用方吃没吃完都不影响走到下一条。
+ *
+ * [onProgress]（0.6.0）：每收进一份会话回调一次（已收份数）。导入大包时界面
+ * 靠它报「已读 N 份」，不再干瞪。默认空实现。
+ *
+ * **参数顺序是钉死的**：[onProgress] 必须排在 [onSession] **前面**——老调用方全部
+ * 用尾随 lambda 传 onSession，尾随 lambda 永远绑最后一个参数；onProgress 若排最后，
+ * 老调用整个读包编不过（run 35115150047 抓的正是这个，"No value passed for
+ * parameter 'onSession'"）。谁想换顺序，先把所有调用点改成具名参数再说。
  */
 fun readBackup(
     input: InputStream,
+    onProgress: (handledSessions: Int) -> Unit = {},
     onSession: (id: String, stream: InputStream) -> Unit,
 ): BackupReadResult {
     var manifest: BackupManifest? = null
@@ -126,6 +140,7 @@ fun readBackup(
                     if (isSafeSessionId(id)) {
                         onSession(id, zip)
                         handled += 1
+                        onProgress(handled)
                     } else if (skipped.size < MAX_SKIPPED_LISTED) {
                         skipped += name
                     }
