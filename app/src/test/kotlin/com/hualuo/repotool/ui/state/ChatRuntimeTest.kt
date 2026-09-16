@@ -6,15 +6,17 @@ import com.hualuo.engine.api.WireResponse
 import com.hualuo.engine.api.WireTransport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * ChatRuntime 的同步流程测试：worker 注入成「当场跑完」，假 transport 按脚本喂 SSE 帧，
- * 钉的是界面层的四件事——没配置不碰网络、流式落到卡片、错误卡不进历史、忙时不双发。
+ * 钉的是界面层的几件事——没配置不碰网络、流式落到卡片、错误卡不进历史、忙时不双发、
+ * 拉清单三态各归各家。
  *
  * 与 engine 那边分工不重叠：重试红线/槽/卡死归 ChatWireRunnerTest，
- * 这里只管「消息列表这块界面事实演得对不对」。
+ * 这里只管「消息列表与清单这块界面事实演得对不对」。
  */
 class ChatRuntimeTest {
 
@@ -54,6 +56,12 @@ class ChatRuntimeTest {
 
     private fun statusOf(code: Int, body: String) = { _: WireRequest, _: LineSink ->
         WireResponse(code, null, 0L, body)
+    }
+
+    /** 列表那种整份 JSON 的收场：按行喂给 sink，返回 200。 */
+    private fun jsonOf(body: String) = { _: WireRequest, sink: LineSink ->
+        sink.onLine(body)
+        WireResponse(200, null, body.length.toLong(), null)
     }
 
     private fun runtimeOf(
@@ -143,7 +151,7 @@ class ChatRuntimeTest {
                     // 在生成线程的当口再按发送：必须被忙闸挡下，不排队也不并发
                     if (!attempted) {
                         attempted = true
-                        sink.let { runtimeProxy?.send("插队", "m") }
+                        runtimeProxy?.send("插队", "m")
                     }
                     sink.onLine("data: [DONE]")
                     WireResponse(200, null, 10L, null)
@@ -157,6 +165,7 @@ class ChatRuntimeTest {
         assertEquals("被挡下的发送不留痕", 2, runtime.messages.size)
         assertEquals(1, wire.calls)
         assertFalse("消息里不该出现插队", runtime.messages.any { it.text.contains("插队") })
+        runtimeProxy = null
     }
 
     @Test
@@ -165,6 +174,52 @@ class ChatRuntimeTest {
         runtime.stop()
         assertFalse(runtime.busy)
         assertTrue(runtime.messages.isEmpty())
+    }
+
+    @Test
+    fun refreshModelsLandsRemoteList() {
+        val wire = FakeWire(
+            mutableListOf(jsonOf("""{"data":[{"id":"m-a"},{"id":"m-b"},{"name":"m-c"}]}""")),
+        )
+        val runtime = runtimeOf(MemPersist(configured), wire)
+
+        runtime.refreshModels()
+
+        assertEquals("三形状混出的名字全落地（name 兜底同规则）", listOf("m-a", "m-b", "m-c"), runtime.remoteModels)
+        assertNull("成功不留错话", runtime.modelsError)
+        assertFalse("拉完忙灯归位", runtime.modelsBusy)
+        assertEquals("列表是免费 GET：不占生成槽、不碰 chat 通道", 0, runtime.messages.size)
+    }
+
+    @Test
+    fun refreshModelsErrorKeepsWayOut() {
+        val wire = FakeWire(
+            mutableListOf(statusOf(401, """{"error":{"message":"bad key"}}""")),
+        )
+        val runtime = runtimeOf(MemPersist(configured), wire)
+
+        runtime.refreshModels()
+
+        assertTrue("失败不许留旧名单冒充成功", runtime.remoteModels.isEmpty())
+        assertTrue(
+            "错话要带 401 与出路：${runtime.modelsError}",
+            runtime.modelsError?.contains("401") == true,
+        )
+        assertFalse("失败收场忙灯也要归位", runtime.modelsBusy)
+    }
+
+    @Test
+    fun refreshModelsEmptyListingSaysSoNotSilence() {
+        val wire = FakeWire(mutableListOf(jsonOf("""{"data":[]}""")))
+        val runtime = runtimeOf(MemPersist(configured), wire)
+
+        runtime.refreshModels()
+
+        assertTrue("空名单不许装成清单", runtime.remoteModels.isEmpty())
+        assertTrue(
+            "空名单要单说一句，不许和「拉取成功」混在一起：${runtime.modelsError}",
+            runtime.modelsError?.contains("没认出") == true,
+        )
     }
 
     private companion object {

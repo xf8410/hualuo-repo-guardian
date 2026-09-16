@@ -36,8 +36,11 @@ import java.util.Locale
  *    不许牵连上一条已完成的。
  *  - [worker] 注入点让 JVM 测试能同步跑完一整条链（单测不 sleep 等线程）。
  *
- * 参数写法钉一条 Kotlin 规矩（CI 抓过）：尾随 lambda 永远绑**最后一个**参数——
- * 本类最后一个是 clock，调用方传开关必须具名 `autoRetryCostly = {...}`，不许偷懒尾随。
+ * 参数写法钉两条 Kotlin 规矩（都是 CI 抓过的）：
+ *  - 尾随 lambda 永远绑**最后一个**参数——本类最后一个是 clock，
+ *    调用方传开关必须具名 `autoRetryCostly = {...}`，不许偷懒尾随；
+ *  - **跨模块的 public 属性判空后不智能转换**（:engine 的 ModelListing.error 在 :app
+ *    眼里随时可能被别的模块改值）——先接进局部变量再用。
  */
 class ChatRuntime(
     private val persist: UiPersistence,
@@ -52,6 +55,19 @@ class ChatRuntime(
         private set
 
     var busy by mutableStateOf(false)
+        private set
+
+    // ── 端点模型清单（客户端 listModels 的真出口，不是又一份演示表） ──────────
+
+    /** 端点上一次成功返回的模型名列表；没拉过就是空，界面据此决定摆不摆「端点」组。 */
+    var remoteModels by mutableStateOf(emptyList<String>())
+        private set
+
+    var modelsBusy by mutableStateOf(false)
+        private set
+
+    /** 上次拉取失败的人话（含出路）；成功一次就清空。空列表不等于错，这话界面分开说。 */
+    var modelsError by mutableStateOf<String?>(null)
         private set
 
     private val lock = Any()
@@ -85,6 +101,42 @@ class ChatRuntime(
     /** 停止：掐进行中的那一条（幂等，没在跑就是空操作）。 */
     fun stop() {
         activeSlot?.stop()
+    }
+
+    /**
+     * 从端点拉模型清单（免费 GET，不占生成槽——列表不该把「正在生成」挡在外面）。
+     * 结果三态各归各的家：成功进 [remoteModels]、失败进 [modelsError]（带出路）、
+     * 空列表单独说明「对方回话正常但没认出模型名」——不拿空名单装「拉取成功」。
+     */
+    fun refreshModels() {
+        if (modelsBusy) return
+        val profile = profileFor("")
+        modelsBusy = true
+        modelsError = null
+        val body = Runnable {
+            val listing = runCatching {
+                OpenAiCompatClient(
+                    transport = transportFactory(),
+                    slot = GenerationSlot(),
+                    // 列表免费：按政策的免费档允许自动重来一次，与花钱请求的克制正好相反。
+                    policy = RetryPolicy(maxAutomaticRetries = 1),
+                    watchdog = IdleWatchdog(IdleWatchdog.TRANSFER_IDLE_MS),
+                ).listModels(profile)
+            }.getOrNull()
+            modelsBusy = false
+            if (listing == null) {
+                modelsError = "拉取失败：内部异常（没碰模型清单）"
+                return@Runnable
+            }
+            // 跨模块 public 属性不配智能转换（CI 编译段抓过）：判空先接局部。
+            val failure = listing.error
+            when {
+                failure != null -> modelsError = failure.userMessage()
+                listing.models.isEmpty() -> modelsError = "端点回话正常，但没认出任何模型名：清单没更新"
+                else -> remoteModels = listing.models
+            }
+        }
+        worker(Thread(body).apply { name = "hualuo-models" })
     }
 
     private fun runGeneration(profile: ProviderProfile, history: List<ChatTurn>) {
