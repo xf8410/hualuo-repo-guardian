@@ -108,7 +108,7 @@ val RealSubPages: Map<String, SubPage> = mapOf(
             ),
         ),
     ),
-    // 覆盖演示表「GitHub 工作台」页：仓库CI 页与「检查更新」真读这两格。
+    // 覆盖演示表「GitHub 工作台」页：仓库CI 页/检查更新/CI 提醒全读这几格。
     "github" to SubPage(
         "GitHub 工作台",
         listOf(
@@ -123,9 +123,19 @@ val RealSubPages: Map<String, SubPage> = mapOf(
                 "公开仓库可留空；私有仓库要填",
                 secret = true,
             ),
+            SubField.PersistedSwitch(
+                "CI 提醒（后台轮询，红绿出通知）",
+                UiKeys.CI_NOTIFY,
+                true,
+            ),
             SubField.Note(
-                "仓库CI 页拉 workflow runs、「检查更新」对最新发布版，读的都是这两格。" +
+                "仓库CI 页拉 workflow runs、「检查更新」对最新发布版，读的都是上面两格。" +
                     "令牌只进请求头，不进任何报错、日志与界面文本。",
+            ),
+            SubField.Note(
+                "CI 提醒：每 15 分钟在后台拍一次 GitHub，有新 run 出结果就发通知栏（红绿都报）。" +
+                    "关掉就完全静默。Android 13+ 首开 App 会问一次通知权限，拒过的话去系统设置里开，" +
+                    "这里不会反复弹。",
             ),
         ),
     ),

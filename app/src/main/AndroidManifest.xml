@@ -5,9 +5,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
-      前台服务权限 M1 加（做长任务上传时必须，届时要连同"首行 promote + 看门狗"一起进，
-      不许只加权限不加模板 —— 旧 Agora 那个崩溃 140 次就是这么来的）。
+      通知（Android 13+ 要运行时申请，MainActivity 首开问一次）：
+      CI 后台轮询的红绿提醒（WorkManager 每 15 分钟一拍，不引入前台服务）。
+      本仓纪律：manifest 里永远不许出现 <service> —— 旧 Agora「前台服务 5 秒超时」
+      崩了 140 次的病，靠这条纪律拦死；真要加服务必须连「首行 promote + 看门狗」
+      模板一起进，不许只加权限不加模板。
     -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"

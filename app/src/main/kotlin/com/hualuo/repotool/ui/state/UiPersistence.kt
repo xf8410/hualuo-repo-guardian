@@ -80,4 +80,8 @@ object UiKeys {
     /** GitHub 只读两格（仓库CI 页与「检查更新」用）。首次上线 2026-09-16。 */
     const val GITHUB_REPO = "github.repo"
     const val GITHUB_TOKEN = "github.token"
+
+    /** CI 红绿提醒的开关与记账（后台轮询见 notify/CiNotifyWorker）。首次上线 2026-09-16。 */
+    const val CI_NOTIFY = "ui.ci_notify_on"
+    const val CI_LAST_RUN_ID = "ci.last_run_id"
 }

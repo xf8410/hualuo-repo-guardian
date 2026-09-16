@@ -88,6 +88,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // CI 红绿提醒的后台轮询（2026-09-16 接回旧 Agora 魔改版就有的功能）：
+    // WorkManager 15 分钟一拍，不引入前台服务（manifest 纪律：永远没有 <service>）
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     testImplementation("junit:junit:4.13.2")
 }
 
