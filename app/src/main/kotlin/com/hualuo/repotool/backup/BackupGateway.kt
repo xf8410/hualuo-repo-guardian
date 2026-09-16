@@ -2,14 +2,17 @@ package com.hualuo.repotool.backup
 
 import android.content.Context
 import android.net.Uri
+import com.hualuo.engine.backup.AgoraImportPlan
 import com.hualuo.engine.backup.BACKUP_FORMAT
 import com.hualuo.engine.backup.BACKUP_VERSION
 import com.hualuo.engine.backup.BackupManifest
 import com.hualuo.engine.backup.BackupSessionSource
 import com.hualuo.engine.backup.MAX_SETTINGS_CHARS
+import com.hualuo.engine.backup.readAgoraBackup
 import com.hualuo.engine.backup.readBackup
 import com.hualuo.engine.backup.writeBackup
 import com.hualuo.engine.io.streamingCopy
+import com.hualuo.engine.store.SessionStore
 import com.hualuo.repotool.ui.state.SESSIONS_DIR_NAME
 import com.hualuo.repotool.ui.state.SETTINGS_RELATIVE_PATH
 import java.io.File
@@ -17,13 +20,13 @@ import java.io.InputStreamReader
 
 /**
  * 备份的安卓侧网关：系统文件选择器（SAF）给 uri，这里负责流进流出。
- * 引擎（BackupArchive）管包格式，这里管「跟安卓要流」——两件事不混在一个文件里。
+ * 引擎（BackupArchive / AgoraImport）管包格式，这里管「跟安卓要流」——两件事不混在一个文件里。
  *
  * 设置的**导入**刻意不在这里落盘：界面上活着的 SettingsStore 是另一份实例，
  * 这里绕过它直接写文件，活通道一次 flush 就会把新值盖掉（两份事实的老病）。
- * 所以设置原文由 [readImport] 带回，交给 AppUiState 的活通道去进。
+ * 所以设置原文/兑换单由 [readImport] / [readAgoraImport] 带回，交给 AppUiState 的活通道去进。
  *
- * 两个函数都用**块体**：体里有 `return` 提前退场，表达式体（= try {...}）禁止 return——
+ * 三个函数都用**块体**：体里有 `return` 提前退场，表达式体（= try {...}）禁止 return——
  * CI 编译段连抓两次（run 35097435110 抓 engine，紧接着这轮抓这里）。谁要改成表达式体，
  * 先把里面的 return 全拔掉，别赌编译器放行。
  */
@@ -36,6 +39,15 @@ object BackupGateway {
         val sessionsImported: Int,
         val sessionsSkipped: Int,
         val warnings: List<String>,
+    )
+
+    /** 旧 Agora 包的兑换回执：recognized=false 时 plan/sessions 全空。 */
+    data class AgoraImportOutcome(
+        val recognized: Boolean,
+        val plan: AgoraImportPlan?,
+        val sessionsImported: Int,
+        val sessionsSkipped: Int,
+        val error: String?,
     )
 
     /** 导出：设置文件原文 + 会话仓全部 jsonl，zip 流式写进系统给的输出流。返回 null = 成。 */
@@ -59,7 +71,7 @@ object BackupGateway {
     }
 
     /**
-     * 读一个包：会话现场落盘（重名跳过、原文件保留）；设置只带回原文。
+     * 读一个本家包：会话现场落盘（重名跳过、原文件保留）；设置只带回原文。
      * manifest 条目在包里排最前（写方钉死的顺序），所以会话回调时身份一定已判完。
      */
     fun readImport(context: Context, uri: Uri): ImportedBackup {
@@ -109,6 +121,37 @@ object BackupGateway {
             )
         } catch (e: Exception) {
             ImportedBackup(false, null, 0, 0, listOf("导入失败：${e.message ?: "读不了这个文件"}"))
+        }
+    }
+
+    /**
+     * 读一个旧 Agora 包（.agora）：流式过引擎兑换单；会话在这里落盘
+     * （id 带 agora- 前缀、重名跳过原文件保留），设置兑给活通道，媒体/任务带不过来的账在 plan.notes。
+     */
+    fun readAgoraImport(context: Context, uri: Uri): AgoraImportOutcome {
+        return try {
+            val stream = context.contentResolver.openInputStream(uri)
+                ?: return AgoraImportOutcome(false, null, 0, 0, "读不到这个文件（系统没给输入流）")
+            val plan = stream.use { readAgoraBackup(it) }
+            if (!plan.recognized) {
+                return AgoraImportOutcome(false, plan, 0, 0, "这不是旧 Agora 的备份包（manifest 对不上）：没有导入任何东西")
+            }
+            val sessionsDir = File(context.filesDir, SESSIONS_DIR_NAME).apply { mkdirs() }
+            val store = SessionStore(sessionsDir)
+            var imported = 0
+            var skipped = 0
+            for (s in plan.sessions) {
+                if (store.exists(s.id)) {
+                    skipped += 1
+                } else if (store.writeSession(s.id, s.head, s.messages)) {
+                    imported += 1
+                } else {
+                    skipped += 1
+                }
+            }
+            AgoraImportOutcome(true, plan, imported, skipped, null)
+        } catch (e: Exception) {
+            AgoraImportOutcome(false, null, 0, 0, "导入失败：${e.message ?: "读不了这个文件"}")
         }
     }
 

@@ -35,8 +35,8 @@ import kotlin.reflect.KProperty
  *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
  *  - **备份（数据控制）**：按钮只发出动作请求（[pendingDataAction]），系统文件选择器在
- *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] 走活通道进——
- *    绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
+ *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] / [applyAgoraImport]
+ *    走活通道进——绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
  * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys、SettingsCatalog 与 ChatRuntime。
@@ -259,7 +259,7 @@ class AppUiState(
     }
 
     /**
-     * 把导入的备份应用进**活通道**：设置逐键 save（活通道是唯一事实，绕过它直接写文件
+     * 把导入的本家备份应用进**活通道**：设置逐键 save（活通道是唯一事实，绕过它直接写文件
      * 会被下一次 flush 用旧值盖掉）；会话已由网关落盘，这里只把账报出来。
      * 返回一句话给 toast；修订号推一格 + 立即落盘，界面与盘上同时吃到新值。
      *
@@ -297,6 +297,45 @@ class AppUiState(
             append("导入完成：设置 $applied 项、会话 ${backup.sessionsImported} 份")
             if (backup.sessionsSkipped > 0) append("、重名会话跳过 ${backup.sessionsSkipped} 份（原来的保留）")
             if (backup.warnings.isNotEmpty()) append("；").append(backup.warnings.joinToString("；"))
+            if (issues.isNotEmpty()) append("；设置提示：").append(issues.joinToString("；"))
+            if (flushFailure != null) append("；设置没存上：").append(flushFailure)
+        }
+    }
+
+    /**
+     * 旧 Agora 包（.agora）的应用：会话已由网关落盘（agora- 前缀、重名跳过），
+     * 这里把兑换单里的设置逐键送进**活通道**，带不动的账（媒体/任务/模板变量）原样报出来。
+     * 返回一句话给 toast；修订号推一格 + 立即落盘。
+     */
+    fun applyAgoraImport(outcome: BackupGateway.AgoraImportOutcome): String {
+        if (!outcome.recognized || outcome.plan == null) {
+            return outcome.error ?: "旧备份没认出来：没有导入任何东西"
+        }
+        val plan = outcome.plan
+        var applied = 0
+        fun put(key: String, value: String?) {
+            if (value != null) {
+                persist.save(key, value)
+                applied += 1
+            }
+        }
+        put(ChatRuntime.KEY_NAME, plan.providerName)
+        put(ChatRuntime.KEY_BASE_URL, plan.baseUrl)
+        put(ChatRuntime.KEY_API_KEY, plan.apiKey)
+        put(UiKeys.MODEL, plan.selectedModel)
+        put(ChatRuntime.KEY_SYSTEM_PROMPT, plan.systemPrompt)
+        plan.thinkingOn?.let { put(UiKeys.THINK_ON, it.toString()) }
+        plan.thinkingLevel?.let { put(UiKeys.THINK_LEVEL, it.toString()) }
+        plan.codeExecOn?.let { put(UiKeys.CODE_EXEC_ON, it.toString()) }
+        plan.webSearchOn?.let { put(UiKeys.WEB_SEARCH_ON, it.toString()) }
+        plan.shellOn?.let { put(UiKeys.SHELL_ON, it.toString()) }
+        settingsRevision += 1
+        val issues = persistenceMessages()
+        val flushFailure = flushPersistence()
+        return buildString {
+            append("旧 Agora 备份导入完成：设置 $applied 项、会话 ${outcome.sessionsImported} 份")
+            if (outcome.sessionsSkipped > 0) append("、重名会话跳过 ${outcome.sessionsSkipped} 份（原来的保留）")
+            if (plan.notes.isNotEmpty()) append("；").append(plan.notes.joinToString("；"))
             if (issues.isNotEmpty()) append("；设置提示：").append(issues.joinToString("；"))
             if (flushFailure != null) append("；设置没存上：").append(flushFailure)
         }

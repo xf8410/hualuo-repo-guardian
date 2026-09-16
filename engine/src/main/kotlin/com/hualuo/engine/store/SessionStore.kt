@@ -105,6 +105,29 @@ class SessionStore(private val dir: File) {
         return true
     }
 
+    /**
+     * 整写一个会话（迁移/导入用）：head 在前、消息按给定顺序逐行写。
+     * 目标已存在就拒绝（返回 false）——导入不许悄悄盖掉用户手里的会话；
+     * 先写 .tmp 再改名，中途崩了原文件不陪葬。转义只走 jsonEscape 一个出口，
+     * 和 append 写出的行逐字节同款，load 读回来必须一条不少。
+     */
+    fun writeSession(id: String, head: SessionHead, messages: List<StoredMsg>): Boolean {
+        val f = file(id)
+        if (f.exists()) return false
+        val body = StringBuilder(headJson(head)).apply {
+            messages.forEach { append('\n').append(msgJson(it)) }
+            append('\n')
+        }
+        val tmp = File(dir, f.name + ".tmp")
+        return try {
+            tmp.writeText(body.toString())
+            tmp.renameTo(f) || run { tmp.delete(); false }
+        } catch (_: Exception) {
+            tmp.delete()
+            false
+        }
+    }
+
     /** 给会话补标题（首条用户话截几个字由调用方决定，这里只负责改写头行）。 */
     fun rename(id: String, title: String): Boolean {
         val loaded = load(id) ?: return false

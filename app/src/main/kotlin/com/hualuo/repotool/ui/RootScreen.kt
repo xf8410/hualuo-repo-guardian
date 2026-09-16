@@ -100,6 +100,8 @@ private val NavTabIcons = mapOf(
  * 备份（数据控制）的桥也架在这里：设置子页的按钮只发动作请求（state.pendingDataAction），
  * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult，选择器结果回来后
  * 网关流式进出、状态层走活通道应用，各管一段。
+ * **三个备份动作全在后台线程跑**（大会计在主线程做文件 IO 就是 ANR/闪退——旧 Agora 的病，
+ * 2026-09-16 拍板根治）：先 toast「正在做」，完事再 toast 结果。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -110,25 +112,31 @@ fun HualuoApp(versionLabel: String) {
     val state = remember(bundle) { AppUiState(bundle.persistence, bundle.store) }
     state.versionLabel = versionLabel
 
-    // 数据控制的两个系统选择器（导出=建文档、导入=选文件）；结果一律出声，不静默
+    // 数据控制的三个系统选择器（导出=建文档、导入=选文件、旧包=选文件）；结果一律出声，不静默
     val exportBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
-        val failure = if (uri == null) {
-            null
-        } else {
-            runCatching { BackupGateway.exportTo(context, uri, state.versionLabel) }
-                .getOrElse { "导出失败：${it.message ?: "写不进去"}" }
+        if (uri == null) {
+            state.clearPendingDataAction()
+            return@rememberLauncherForActivityResult
         }
-        state.toast(failure ?: "备份已导出（设置 + 全部会话）")
-        state.clearPendingDataAction()
+        state.toast("正在打包备份……")
+        Thread({
+            val failure = runCatching { BackupGateway.exportTo(context, uri, state.versionLabel) }
+                .getOrElse { "导出失败：${it.message ?: "写不进去"}" }
+            state.toast(failure ?: "备份已导出（设置 + 全部会话）")
+            state.clearPendingDataAction()
+        }, "hualuo-backup").start()
     }
     val importBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) {
             state.clearPendingDataAction()
-        } else {
+            return@rememberLauncherForActivityResult
+        }
+        state.toast("正在导入备份……")
+        Thread({
             val outcome = runCatching { BackupGateway.readImport(context, uri) }
                 .getOrElse {
                     BackupGateway.ImportedBackup(
@@ -138,12 +146,33 @@ fun HualuoApp(versionLabel: String) {
                 }
             state.toast(state.applyImportedBackup(outcome))
             state.clearPendingDataAction()
+        }, "hualuo-import").start()
+    }
+    val importAgora = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) {
+            state.clearPendingDataAction()
+            return@rememberLauncherForActivityResult
         }
+        state.toast("正在读旧 Agora 备份……")
+        Thread({
+            val outcome = runCatching { BackupGateway.readAgoraImport(context, uri) }
+                .getOrElse {
+                    BackupGateway.AgoraImportOutcome(
+                        false, null, 0, 0,
+                        "读不了这个文件：${it.message ?: "打不开"}",
+                    )
+                }
+            state.toast(state.applyAgoraImport(outcome))
+            state.clearPendingDataAction()
+        }, "hualuo-agora").start()
     }
     LaunchedEffect(state.pendingDataAction) {
         when (val action = state.pendingDataAction) {
             "export" -> exportBackup.launch("hualuo-backup-${state.versionLabel.replace(" ", "-")}.zip")
             "import" -> importBackup.launch(arrayOf("application/zip", "application/octet-stream"))
+            "import_agora" -> importAgora.launch(arrayOf("*/*"))
             else -> Unit
         }
     }
