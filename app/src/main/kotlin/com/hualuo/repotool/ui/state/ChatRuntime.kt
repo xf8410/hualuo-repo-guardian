@@ -11,6 +11,8 @@ import com.hualuo.engine.api.WireTransport
 import com.hualuo.engine.generation.GenerationSlot
 import com.hualuo.engine.generation.IdleWatchdog
 import com.hualuo.engine.http.RetryPolicy
+import com.hualuo.engine.store.SessionStore
+import com.hualuo.engine.store.StoredMsg
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Badge
@@ -29,6 +31,12 @@ import java.util.Locale
  *   全在 ChatWireRunner 里，这里不重复立法）
  *   收场把最后一张卡改成成品或错误卡，busy 归位。
  *
+ * **会话落盘（M2 接线）**：store 不为 null 时，每条消息在**收场瞬间**追加一行进
+ * SessionStore 的 JSONL——不押「退出那一刻」（系统杀进程根本不走那个路径，旧 Agora
+ * 「退回来消息不见」修不好就修在押错了时机）。启动回读也是**同步**的（restoreFromStore，
+ * 没有异步首读，就没有白屏和「多进几次才出来」的土壤）。落盘出任何岔子写进
+ * [storeIssue] 由界面 toast 出声，不当静默。
+ *
  * 家规对齐：
  *  - 「生成中」只是徽标文字，不是转圈图形；错误卡走系统红样式，text 就是
  *    GenerationError.userMessage()——出路写在脸上，不弹窗、不静默。
@@ -36,17 +44,24 @@ import java.util.Locale
  *    不许牵连上一条已完成的。
  *  - [worker] 注入点让 JVM 测试能同步跑完一整条链（单测不 sleep 等线程）。
  *
- * 参数写法钉两条 Kotlin 规矩（都是 CI 抓过的）：
+ * Kotlin 规矩记牢（都是 CI 抓过的）：
  *  - 尾随 lambda 永远绑**最后一个**参数——本类最后一个是 clock，
  *    调用方传开关必须具名 `autoRetryCostly = {...}`，不许偷懒尾随；
  *  - **跨模块的 public 属性判空后不智能转换**（:engine 的 ModelListing.error 在 :app
- *    眼里随时可能被别的模块改值）——先接进局部变量再用。
+ *    眼里随时可能被别的模块改值）——先接进局部变量再用；
+ *  - **Result.getOrDefault 只管「失败了」，不管「里面装着 null」**：`runCatching { x?.y() }`
+ *    出来的是 Result<Boolean?>，x 为 null 且没抛异常时 getOrDefault(false) 递回来的
+ *    还是 null——可空调用先解包成非空再进 runCatching（第五课）；
+ *  - **改函数签名要全量过一遍调用点**：appendLineLocked 从带默认参数改成全显式时，
+ *    两处调用点一处漏传、一处参数序颠倒——CI 编译段连抓三次才齐（第六课）。
  */
 class ChatRuntime(
     private val persist: UiPersistence,
     val autoRetryCostly: () -> Boolean = { RETRY_COSTLY_DEFAULT },
     private val transportFactory: () -> WireTransport = ::UrlConnTransport,
     private val worker: (Thread) -> Unit = { it.start() },
+    /** 会话仓；null = 没接库（纯 JVM 测试与降级路径），一切照内存版走。 */
+    private val store: SessionStore? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
@@ -55,6 +70,14 @@ class ChatRuntime(
         private set
 
     var busy by mutableStateOf(false)
+        private set
+
+    /** 当前挂着的会话文件 id；null = 还没在盘上开过户。 */
+    var sessionId: String? = null
+        private set
+
+    /** 落盘出岔子时的人话（带原因）；界面 toast 后必须调 [clearStoreIssue] 取走。 */
+    var storeIssue by mutableStateOf<String?>(null)
         private set
 
     // ── 端点模型清单（客户端 listModels 的真出口，不是又一份演示表） ──────────
@@ -93,6 +116,8 @@ class ChatRuntime(
                     text = "",
                 )
             activeSlot = GenerationSlot()
+            // 用户话当场落一行（不押退出时机）；顺带给没标题的会话补上「首条话截字」当标题
+            ensureSessionLocked(model, text)
         }
         val body = Runnable { runGeneration(profile, historyToSend) }
         worker(Thread(body).apply { name = "hualuo-chat" })
@@ -101,6 +126,46 @@ class ChatRuntime(
     /** 停止：掐进行中的那一条（幂等，没在跑就是空操作）。 */
     fun stop() {
         activeSlot?.stop()
+    }
+
+    /**
+     * 从盘上接一个会话（同步，无异步首读）。返回 null = 没接成（没库或文件没了）；
+     * 接成了返回条数与坏行数，坏行**必须出声**不许悄悄丢。
+     */
+    fun restoreFromStore(id: String): SessionRestoreNote? {
+        val s = store ?: return null
+        val loaded = s.load(id) ?: return null
+        val head = loaded.head
+        val modelBadge = head?.model?.takeIf { it.isNotBlank() } ?: "历史"
+        val restored = loaded.messages.map { m ->
+            when (m.role) {
+                StoredMsg.ROLE_USER ->
+                    ChatMsg(who = emptyList(), time = fmt(m.atMs), text = m.text, fromMe = true)
+                StoredMsg.ROLE_ERROR ->
+                    ChatMsg(who = listOf(Badge("系统", Tone.Err)), time = fmt(m.atMs), text = m.text, isError = true)
+                else ->
+                    // 半截标记存的是整卡原文（含「别当成品」那行），照原样回摆，不冒充成品
+                    ChatMsg(who = listOf(Badge(modelBadge, Tone.Neutral)), time = fmt(m.atMs), text = m.text)
+            }
+        }
+        synchronized(lock) {
+            sessionId = id
+            messages = restored
+        }
+        return SessionRestoreNote(restored.size, loaded.badLines, head == null)
+    }
+
+    /** 开新会话：内存清空、换户头。id 传 null = 回到「没接库」状态（删掉了当前会话时用）。 */
+    fun startFreshSession(id: String?) {
+        synchronized(lock) {
+            sessionId = id
+            messages = emptyList()
+        }
+    }
+
+    /** 取走落盘岔子（取走即清），配合 RootScreen 的 toast 出声。 */
+    fun clearStoreIssue() {
+        storeIssue = null
     }
 
     /**
@@ -178,6 +243,9 @@ class ChatRuntime(
                 )
             }
             busy = false
+            // 收场即落一行：存的是屏上那张卡的原文（半截也照存 + incomplete 标记），
+            // 重开摆回来的就是用户当时看见的东西，一字不差。
+            persistSettleLocked(finished, isErrorCard = error != null)
         }
     }
 
@@ -189,6 +257,49 @@ class ChatRuntime(
             val last = messages.last()
             messages = base + last.copy(text = last.text + chunk)
         }
+    }
+
+    /** 没接库就不动盘；接了库就把当前户头补上（首次发话时创建 + 补标题 + 落用户行）。 */
+    private fun ensureSessionLocked(model: String, firstUserText: String) {
+        val s = store ?: return
+        if (sessionId == null) {
+            val created = runCatching { s.create(model) }.getOrElse {
+                storeIssue = "新会话没建成（${it.message ?: "写盘出错"}）：这轮对话只在屏上，重开会丢"
+                return
+            }
+            sessionId = created
+            // 首条话截字当标题（截几个字是调用方的权，家规）；补不了标题不影响聊天
+            runCatching { s.rename(created, firstUserText.take(16)) }
+        }
+        // 走到这 sessionId 必非空（要么本来就有，要么刚建好；建失败早 return 了）
+        val sid = sessionId ?: return
+        appendLineLocked(StoredMsg(StoredMsg.ROLE_USER, firstUserText, clock()), sid, s)
+    }
+
+    /**
+     * 收场那行：错误/半截存 error 角色（喂模型时永远剔掉），成品存 assistant。
+     * isErrorCard 传「error != null」即可：error 卡落 error 角色；error 为 null 时
+     * 最后那张卡必是成品（空收场在上面已兜底成错误卡，但那条走的是 error != null 路径）。
+     */
+    private fun persistSettleLocked(finished: String, isErrorCard: Boolean) {
+        if (!isErrorCard && finished.isEmpty()) return // 双保险：不落空行
+        val sid = sessionId ?: return
+        val s = store ?: return
+        val card = messages.lastOrNull() ?: return
+        val stored = StoredMsg(
+            role = if (isErrorCard) StoredMsg.ROLE_ERROR else StoredMsg.ROLE_ASSISTANT,
+            text = card.text,
+            atMs = clock(),
+            incomplete = isErrorCard && finished.isNotEmpty(),
+        )
+        appendLineLocked(stored, sid, s)
+    }
+
+    /** 落一行；失败必须出声（storeIssue），不许静默丢字。可空性在调用点已解干净。 */
+    private fun appendLineLocked(msg: StoredMsg, sid: String, s: SessionStore) {
+        // 可空调用先解包再进 runCatching（第五课）：别让 null 藏在 Result 里骗过 getOrDefault。
+        val ok = runCatching { s.append(sid, msg) }.getOrDefault(false)
+        if (!ok) storeIssue = "这条没存上（会话文件写不进）：正文还在屏上，但重开就丢"
     }
 
     private fun profileFor(model: String): ProviderProfile = ProviderProfile(
@@ -205,8 +316,10 @@ class ChatRuntime(
             // 上限先钉一个粗护栏（历史裁剪策略是后面一挂的正事），别无声涨到超限。
             .takeLast(MAX_HISTORY_TURNS)
 
-    private fun now(): String =
-        SimpleDateFormat("HH:mm", Locale.US).format(Date(clock()))
+    private fun now(): String = fmt(clock())
+
+    private fun fmt(ms: Long): String =
+        SimpleDateFormat("HH:mm", Locale.US).format(Date(ms))
 
     companion object {
         /** 提供商名字（进过真机不许改键名，下同）。 */
@@ -220,3 +333,10 @@ class ChatRuntime(
         const val MAX_HISTORY_TURNS = 40
     }
 }
+
+/** 一次会话回读的回执：条数照报、坏行照报、头坏了单独说，谁都不许悄悄丢。 */
+data class SessionRestoreNote(
+    val count: Int,
+    val badLines: Int,
+    val headMissing: Boolean,
+)

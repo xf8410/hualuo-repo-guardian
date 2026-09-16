@@ -86,11 +86,13 @@ private val NavTabIcons = mapOf(
  *
  * 持久化从这里进：启动时读一份设置（读不懂会带原因退化，不炸界面），
  * 之后界面字段变了就攒着，停 AUTO_SAVE_DEBOUNCE_MS 落一次盘，离开时再兜一次。
+ * 会话库同刀进：bundle.store 交给 AppUiState，启动同步接上最近会话（M2 接线）。
  * 看护清单里除了逐个字段，还有 state.settingsRevision——真文本（提供商地址密钥那类）
  * 每改一次推一格修订号，这里只看这一个数：文本键以后增减，看护点都不用跟着改。
  * （修订号住在 AppUiState 的文本通道上，不在 ChatRuntime——上一版把引用路径写错，
  * CI 编译段当场抓出：state.chat.settingsRevision 是不存在的。）
- * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默。
+ * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默；
+ * 会话落盘的岔子（storeIssue）同规矩：写不进就是「重开就丢」，必须出声。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -98,12 +100,20 @@ private val NavTabIcons = mapOf(
 fun HualuoApp(versionLabel: String) {
     val context = LocalContext.current
     val bundle = remember(context) { createUiPersistence(context) }
-    val state = remember(bundle) { AppUiState(bundle.persistence) }
+    val state = remember(bundle) { AppUiState(bundle.persistence, bundle.store) }
     state.versionLabel = versionLabel
 
-    // 启动通知（设置文件读不懂 / 有读不懂的项）：只弹一次
+    // 启动通知（设置文件读不懂 / 会话库没建成）：只弹一次
     LaunchedEffect(bundle.notice) {
         bundle.notice?.let { state.toast(it) }
+    }
+
+    // 会话落盘岔子：写不进必须出声（正文还在屏上，但重开就丢——人得知道这事）
+    LaunchedEffect(state.chat.storeIssue) {
+        state.chat.storeIssue?.let {
+            state.toast(it)
+            state.chat.clearStoreIssue()
+        }
     }
 
     // 改动落盘：去抖 600ms，失败与坏消息都要出声

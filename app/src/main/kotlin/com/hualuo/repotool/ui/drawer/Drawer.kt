@@ -44,6 +44,8 @@ import com.hualuo.repotool.ui.theme.SubInk
 /**
  * 抽屉（v13 #drawer）：遮罩 + 284dp 左栏。
  * 会话搜索 / 新建 / 管理、多选、删除（带确认框）/ 底部四快捷行直达设置对应分组。
+ * 会话接线后：列表来自真库（AppUiState.convs 由 SessionStore 喂），点行走 openConversation
+ * 真切库——读不出就出声，绝不摆空壳（治旧 Agora「白屏/多进几次才出来」那一类）。
  */
 @Composable
 fun DrawerOverlay(state: AppUiState) {
@@ -194,8 +196,8 @@ private fun ConvRow(state: AppUiState, c: Conv) {
                 if (state.selecting) {
                     state.toggleSelect(c.id)
                 } else {
-                    state.drawerOpen = false
-                    state.toast("切换到会话：${c.title}（演示，接线后换库）")
+                    // 真切库：同步读那份 JSONL 摆上屏（openConversation 内部收抽屉、坏文件出声）
+                    state.openConversation(c.id)
                 }
             }
             .padding(horizontal = 11.dp, vertical = 10.dp),

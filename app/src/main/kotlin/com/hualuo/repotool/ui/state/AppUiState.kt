@@ -4,12 +4,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.hualuo.engine.store.SessionStore
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
 import com.hualuo.repotool.ui.data.DemoConversations
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Conv
 import com.hualuo.repotool.ui.model.NavTab
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.reflect.KProperty
 
 /**
@@ -21,13 +25,18 @@ import kotlin.reflect.KProperty
  *  - 设置页里新加的开关走 flag 与 setFlag：键名由数据表带过来，不占字段位。
  *  - 设置页里的真文本走 text 与 setText：同样按键名，落盘按 settingsRevision 去抖。
  *  - 回合流真消息住 chat（ChatRuntime）：发送走真网络，busy 也从它读，不再单独一个演示布尔。
- *  - 仍是演示态的字段（会话列表、附件缩略、toast、弹层）还没后端，M2 会话库那批再换。
+ *  - **会话库（M2 接线）**：store 不为 null 时，启动**同步**接上最近一次会话（没有异步首读，
+ *    白屏和「多进几次才出来」没有土壤）、抽屉列表来自真库、新建/删除都动真文件；
+ *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
  * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys、SettingsCatalog 与 ChatRuntime。
  * 委托一律和声明写在同一行：属性声明在语法上本身就是完整的，把 by 挪到下一行有被当成分句结束的风险，不赌。
  */
-class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
+class AppUiState(
+    private val persist: UiPersistence = UiPersistence.None,
+    private val store: SessionStore? = null,
+) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
 
@@ -112,7 +121,7 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     // ── 回合流真运行层 ──────────────────────────────────────────────────────
 
     /**
-     * 真说过的话与生成槽都住这里（契约见 ChatRuntime）。
+     * 真说过的话与生成槽都住这里（契约见 ChatRuntime），会话仓同刀接进。
      * 「网关失败自动重发」那个真开关当场从 flag 通道读——两边共用一份事实，不各记各的。
      * 必须具名传：尾随 lambda 会绑到 ChatRuntime 的最后一个参数（clock，返回 Long），
      * 拿开关去尾随就是拿 Boolean 冒充 Long——CI 编译段抓到过，别再犯。
@@ -120,6 +129,7 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     val chat = ChatRuntime(
         persist,
         autoRetryCostly = { flag(RETRY_COSTLY_KEY, RETRY_COSTLY_DEFAULT) },
+        store = store,
     )
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
@@ -153,7 +163,7 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     /** 版本串由入口注入（BuildConfig 读自 version.properties 单源），界面里不许写死。 */
     var versionLabel by mutableStateOf("")
 
-    // 抽屉（会话列表从演示数据起步；删除与新建都作用在这份可变副本上）
+    // 抽屉（store 接上后这里是真库列表；没接库才落回演示数据）
     var drawerOpen by mutableStateOf(false)
     var convQuery by mutableStateOf("")
     var selecting by mutableStateOf(false)
@@ -218,12 +228,47 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
     }
 
     fun newConversation() {
-        val c = Conv("c" + (convs.size + 1) + "-" + System.currentTimeMillis(), "新会话 · 刚刚", "刚刚")
-        convs = listOf(c) + convs
+        val s = store
+        if (s == null) {
+            // 没接库（纯 JVM 测试/会话库没建成）：老演示路径，一字不动
+            val c = Conv("c" + (convs.size + 1) + "-" + System.currentTimeMillis(), "新会话 · 刚刚", "刚刚")
+            convs = listOf(c) + convs
+            selecting = false
+            selectedIds = emptySet()
+            closeSheets()
+            toast("已新建会话（演示数据）")
+            return
+        }
+        val id = runCatching { s.create(currentModel) }.getOrNull()
+        if (id == null) {
+            toast("新会话没建成（盘上出事了）：还接着当前会话聊，字不会丢")
+            closeSheets()
+            return
+        }
+        chat.startFreshSession(id)
+        // 标题允许空——还没说话就是没标题，屏上标「（未命名）」是明示不是编造
+        convs = listOf(Conv(id, "（未命名）", fmtConvMeta(System.currentTimeMillis()))) + convs
         selecting = false
         selectedIds = emptySet()
         closeSheets()
-        toast("已新建会话（演示数据）")
+        toast("已新建会话")
+    }
+
+    /** 抽屉点某条会话：同步读那份 JSONL 摆上屏；读不出就出声，绝不摆空壳。 */
+    fun openConversation(id: String) {
+        if (store == null) return
+        if (id == chat.sessionId) {
+            closeSheets()
+            return
+        }
+        val note = chat.restoreFromStore(id)
+        closeSheets()
+        when {
+            note == null -> toast("这个会话读不到了：文件可能已被删")
+            note.badLines > 0 -> toast("已切到该会话（${note.count} 条）；另有 ${note.badLines} 行读不出，已跳过")
+            note.headMissing -> toast("已切到该会话（${note.count} 条）；这份会话头损坏，标题时间失真")
+            else -> toast("已切到该会话（${note.count} 条）")
+        }
     }
 
     fun askDeleteSelected() {
@@ -231,7 +276,14 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
         if (n == 0) return
         confirmText = "删除 $n 个会话？"
         confirmAction = {
-            convs = convs.filter { it.id !in selectedIds }
+            val ids = selectedIds
+            // 真库：删会话就是删文件（SessionStore 的家规，不留墓碑）
+            store?.let { s -> ids.forEach { id -> runCatching { s.delete(id) } } }
+            if (ids.contains(chat.sessionId)) {
+                // 删的是当前正开的会话：屏上消息清掉、户头摘掉，下条消息自动开新户
+                chat.startFreshSession(null)
+            }
+            convs = convs.filter { it.id !in ids }
             selectedIds = emptySet()
             selecting = false
             confirmOpen = false
@@ -296,6 +348,42 @@ class AppUiState(private val persist: UiPersistence = UiPersistence.None) {
 
     private fun readInt(key: String, default: Int): Int =
         persist.load(key)?.trim()?.toIntOrNull() ?: default
+
+    private fun fmtConvMeta(ms: Long): String =
+        SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(ms))
+
+    /**
+     * 会话库接线（启动，全同步）。刻意写成嵌套 if 而不是 init 里 return：
+     * init 块里的 return 语义各版本 Kotlin 有分歧，不值得赌；嵌套清楚照样读得懂。
+     * 放在类尾：convs 等属性的委托都已初始化，「先用后声明」的初始化顺序坑不存在。
+     * 接成功了不出声（信任靠「字还在」建立，不靠开场白）；失败必须出声。
+     */
+    init {
+        val s = store
+        if (s != null) {
+            val listing = runCatching { s.list() }.getOrNull()
+            if (listing == null) {
+                toast("会话目录读不了：列表这次空着，历史文件一个没动")
+            } else {
+                convs = listing.heads.map { (id, head) ->
+                    Conv(id, head.title.ifBlank { "（未命名）" }, fmtConvMeta(head.createdAtMs))
+                }
+                if (listing.unreadable > 0) {
+                    toast("有 ${listing.unreadable} 个会话文件读不出头，没摆进列表（文件原样保留）")
+                }
+                val latest = listing.heads.firstOrNull()
+                if (latest != null) {
+                    val note = chat.restoreFromStore(latest.first)
+                    when {
+                        note == null -> toast("上次的会话文件读不到了：列表还在，正文没接上")
+                        note.badLines > 0 -> toast("已接上次会话（${note.count} 条）；另有 ${note.badLines} 行读不出，已跳过")
+                        note.headMissing -> toast("已接上次会话（${note.count} 条）；这份会话头损坏，标题时间失真")
+                        else -> Unit
+                    }
+                }
+            }
+        }
+    }
 
     companion object {
         /** 没设置过时的默认模型（真接线后由模型清单决定，这里只是不空着）。 */
