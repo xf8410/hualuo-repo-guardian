@@ -6,6 +6,7 @@ import com.hualuo.repotool.ui.model.SettingsSection
 import com.hualuo.repotool.ui.model.SubField
 import com.hualuo.repotool.ui.model.SubPage
 import com.hualuo.repotool.ui.state.ChatRuntime
+import com.hualuo.repotool.ui.state.UiKeys
 
 /**
  * 「已经接真电」的设置项，和演示表（SettingsData.kt，照抄原型 v13.1）分开放。
@@ -16,7 +17,7 @@ import com.hualuo.repotool.ui.state.ChatRuntime
  * 规矩一：能接真电的项一律用 PersistedSwitch / PersistedText，不许再用演示态 ——
  * 后者状态只活在 remember 里，拿它冒充设置就是「绿勾勾撒谎」的同款病。
  * 规矩二：图标只写 IconKey 键名，字形住 res/values/icons.xml（家规，闸门 NoEmojiInSourceTest）。
- * 规矩三：键名跟着**用它的运行层**要（provider 三键来自 ChatRuntime 的常量），
+ * 规矩三：键名跟着**用它的运行层**要（provider 四键来自 ChatRuntime 的常量），
  * 表里再造一份字面量就是给下一次改键留的双源坑。
  */
 
@@ -74,6 +75,57 @@ val RealSubPages: Map<String, SubPage> = mapOf(
             SubField.Note(
                 "密钥明文存在 App 私有目录（2026-09-15 拍板）：非 root 手机上别的 App 读不到；" +
                     "备份文件发给别人看 = 明文可见，这个边界当初是照着「自己用、忘了密码更麻烦」定的。",
+            ),
+        ),
+    ),
+    // 覆盖演示表「系统指令」页：这段话真的进每次请求（system 消息，排最前）。
+    "prompt" to SubPage(
+        "系统指令",
+        listOf(
+            SubField.PersistedText(
+                "系统指令",
+                ChatRuntime.KEY_SYSTEM_PROMPT,
+                "比如：回答一律中文；留空就不发这条",
+            ),
+            SubField.Note(
+                "这段话作为 system 消息放在每次请求的最前面，历史裁剪不砍它；" +
+                    "空着就一个字不多发，不会塞一条空消息占位。",
+            ),
+        ),
+    ),
+    // 覆盖演示表「历史裁剪」页：上限真管发送，砍数真出声。
+    "trim" to SubPage(
+        "历史裁剪",
+        listOf(
+            SubField.PersistedText(
+                "一次最多带几条历史",
+                UiKeys.MAX_HISTORY,
+                "数字，默认 40（范围 1-500）",
+            ),
+            SubField.Note(
+                "超了就砍最旧的：砍了几条会当场出声（「上下文装不下：砍了 N 条旧话才发」）。" +
+                    "系统指令不算条数；填了读不懂的数字就按 40 走，不会悄悄装作没设。",
+            ),
+        ),
+    ),
+    // 覆盖演示表「GitHub 工作台」页：仓库CI 页与「检查更新」真读这两格。
+    "github" to SubPage(
+        "GitHub 工作台",
+        listOf(
+            SubField.PersistedText(
+                "仓库",
+                UiKeys.GITHUB_REPO,
+                "owner/name，粘整条链接也认",
+            ),
+            SubField.PersistedText(
+                "访问令牌",
+                UiKeys.GITHUB_TOKEN,
+                "公开仓库可留空；私有仓库要填",
+                secret = true,
+            ),
+            SubField.Note(
+                "仓库CI 页拉 workflow runs、「检查更新」对最新发布版，读的都是这两格。" +
+                    "令牌只进请求头，不进任何报错、日志与界面文本。",
             ),
         ),
     ),

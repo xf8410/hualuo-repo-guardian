@@ -26,7 +26,7 @@ import java.util.Locale
  * 回合流的真运行层：**发送不再只是把按钮染红**——这条链是真的网络往返。
  *
  *   读设置里的提供商画像（名字/base/密钥，模型名由界面当场给）
- *   组历史（只取真说过话的用户/助手气泡，错误卡不进历史）
+ *   组历史（只取真说过话的用户/助手气泡，错误卡不进历史；系统指令排最前，裁剪不砍它）
  *   开一条后台线程走 engine 的 OpenAiCompatClient（SSE 逐段上屏、卡死/限流/盲重红线
  *   全在 ChatWireRunner 里，这里不重复立法）
  *   收场把最后一张卡改成成品或错误卡，busy 归位。
@@ -37,6 +37,11 @@ import java.util.Locale
  * 没有异步首读，就没有白屏和「多进几次才出来」的土壤）。落盘出任何岔子写进
  * [storeIssue] 由界面 toast 出声，不当静默。
  *
+ * **上下文喂养（M2 第三刀）**：历史上限与系统指令都从构造 lambda 现场读（与
+ * autoRetryCostly 同一套「两边共用一份事实」的规矩）——超了上限砍最旧的，
+ * **砍了几条记进 [lastTrimmed]**，界面必须出声；系统指令作为 system 消息排最前，
+ * 不占历史条数，空指令就一个字都不多发。
+ *
  * 家规对齐：
  *  - 「生成中」只是徽标文字，不是转圈图形；错误卡走系统红样式，text 就是
  *    GenerationError.userMessage()——出路写在脸上，不弹窗、不静默。
@@ -44,16 +49,17 @@ import java.util.Locale
  *    不许牵连上一条已完成的。
  *  - [worker] 注入点让 JVM 测试能同步跑完一整条链（单测不 sleep 等线程）。
  *
- * Kotlin 规矩记牢（都是 CI 抓过的）：
+ * 参数写法钉两条 Kotlin 规矩（都是 CI 抓过的）：
  *  - 尾随 lambda 永远绑**最后一个**参数——本类最后一个是 clock，
  *    调用方传开关必须具名 `autoRetryCostly = {...}`，不许偷懒尾随；
  *  - **跨模块的 public 属性判空后不智能转换**（:engine 的 ModelListing.error 在 :app
- *    眼里随时可能被别的模块改值）——先接进局部变量再用；
+ *    眼里随时可能被别的模块改值）——先接进局部变量再用。
  *  - **Result.getOrDefault 只管「失败了」，不管「里面装着 null」**：`runCatching { x?.y() }`
- *    出来的是 Result<Boolean?>，x 为 null 且没抛异常时 getOrDefault(false) 递回来的
- *    还是 null——可空调用先解包成非空再进 runCatching（第五课）；
- *  - **改函数签名要全量过一遍调用点**：appendLineLocked 从带默认参数改成全显式时，
- *    两处调用点一处漏传、一处参数序颠倒——CI 编译段连抓三次才齐（第六课）。
+ *    出来的是 Result<Boolean?>，成功且 x 为 null 时 getOrDefault(false) 递回来的还是 null，
+ *    后面 `!ok` 就是对 Boolean? 调 not()——CI 编译段抓过（第五课）。
+ *    可空调用先解包成非空再进 runCatching，别把可空性藏在 Result 里。
+ *  - **var 属性没有智能转换**：`if (sessionId == null) { sessionId = created }` 之后
+ *    sessionId 在编译器眼里仍是可空——解包进局部变量再传参，别赌自动转换（第六课补）。
  */
 class ChatRuntime(
     private val persist: UiPersistence,
@@ -62,6 +68,10 @@ class ChatRuntime(
     private val worker: (Thread) -> Unit = { it.start() },
     /** 会话仓；null = 没接库（纯 JVM 测试与降级路径），一切照内存版走。 */
     private val store: SessionStore? = null,
+    /** 一次喂模型的历史上限（条）；现场读设置，砍最旧的，砍数进 [lastTrimmed]。 */
+    val maxHistoryTurns: () -> Int = { MAX_HISTORY_TURNS },
+    /** 系统指令；空串就不发这条（不多塞一个空消息占位）。 */
+    val systemPrompt: () -> String = { "" },
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
@@ -78,6 +88,10 @@ class ChatRuntime(
 
     /** 落盘出岔子时的人话（带原因）；界面 toast 后必须调 [clearStoreIssue] 取走。 */
     var storeIssue by mutableStateOf<String?>(null)
+        private set
+
+    /** 最近一次发送砍掉了几条旧历史；>0 时界面必须出声（家规：砍数上屏）。 */
+    var lastTrimmed by mutableStateOf(0)
         private set
 
     // ── 端点模型清单（客户端 listModels 的真出口，不是又一份演示表） ──────────
@@ -102,7 +116,8 @@ class ChatRuntime(
     fun send(prompt: String, model: String) {
         val text = prompt.trim()
         if (text.isEmpty()) return
-        val history = historySnapshot()
+        val (history, trimmed) = historySnapshot()
+        lastTrimmed = trimmed
         val profile = profileFor(model)
         val historyToSend = history + ChatTurn("user", text)
         synchronized(lock) {
@@ -262,17 +277,17 @@ class ChatRuntime(
     /** 没接库就不动盘；接了库就把当前户头补上（首次发话时创建 + 补标题 + 落用户行）。 */
     private fun ensureSessionLocked(model: String, firstUserText: String) {
         val s = store ?: return
-        if (sessionId == null) {
-            val created = runCatching { s.create(model) }.getOrElse {
+        // var 属性没有智能转换（第六课补）：解包进局部变量，后面才好当非空传参
+        var sid = sessionId
+        if (sid == null) {
+            sid = runCatching { s.create(model) }.getOrElse {
                 storeIssue = "新会话没建成（${it.message ?: "写盘出错"}）：这轮对话只在屏上，重开会丢"
                 return
             }
-            sessionId = created
+            sessionId = sid
             // 首条话截字当标题（截几个字是调用方的权，家规）；补不了标题不影响聊天
-            runCatching { s.rename(created, firstUserText.take(16)) }
+            runCatching { s.rename(sid, firstUserText.take(16)) }
         }
-        // 走到这 sessionId 必非空（要么本来就有，要么刚建好；建失败早 return 了）
-        val sid = sessionId ?: return
         appendLineLocked(StoredMsg(StoredMsg.ROLE_USER, firstUserText, clock()), sid, s)
     }
 
@@ -295,7 +310,7 @@ class ChatRuntime(
         appendLineLocked(stored, sid, s)
     }
 
-    /** 落一行；失败必须出声（storeIssue），不许静默丢字。可空性在调用点已解干净。 */
+    /** 落一行；失败必须出声（storeIssue），不许静默丢字。 */
     private fun appendLineLocked(msg: StoredMsg, sid: String, s: SessionStore) {
         // 可空调用先解包再进 runCatching（第五课）：别让 null 藏在 Result 里骗过 getOrDefault。
         val ok = runCatching { s.append(sid, msg) }.getOrDefault(false)
@@ -309,12 +324,19 @@ class ChatRuntime(
         model = model,
     )
 
-    /** 历史只取真气泡：错误卡是「我方对失败的说明」，喂回模型等于教它复述错误。 */
-    private fun historySnapshot(): List<ChatTurn> =
-        messages.filter { !it.isError && it.text.isNotBlank() }
+    /**
+     * 组喂模型的历史：真气泡在前、错误卡与空话剔掉、超上限砍最旧并**报砍数**；
+     * 系统指令排最前（system 角色），不占历史条数，空指令一个字不多发。
+     */
+    private fun historySnapshot(): Pair<List<ChatTurn>, Int> {
+        val feedable = messages.filter { !it.isError && it.text.isNotBlank() }
             .map { ChatTurn(role = if (it.fromMe) "user" else "assistant", content = it.text) }
-            // 上限先钉一个粗护栏（历史裁剪策略是后面一挂的正事），别无声涨到超限。
-            .takeLast(MAX_HISTORY_TURNS)
+        val limit = maxHistoryTurns().coerceIn(1, 500)
+        val keep = feedable.takeLast(limit)
+        val sys = systemPrompt().trim()
+        val feed = if (sys.isNotEmpty()) listOf(ChatTurn("system", sys)) + keep else keep
+        return feed to (feedable.size - keep.size)
+    }
 
     private fun now(): String = fmt(clock())
 
@@ -327,9 +349,12 @@ class ChatRuntime(
         const val KEY_BASE_URL = "provider.base_url"
         const val KEY_API_KEY = "provider.api_key"
 
+        /** 系统指令（每次请求最前面的 system 消息；首次上线 2026-09-16，可改字不改键）。 */
+        const val KEY_SYSTEM_PROMPT = "provider.system_prompt"
+
         const val DEFAULT_NAME = "自定义端点"
 
-        /** 临时护栏：只带最近 40 条进上下文。 */
+        /** 历史上限的兜底默认（设置里可配，读不到就用它）。 */
         const val MAX_HISTORY_TURNS = 40
     }
 }

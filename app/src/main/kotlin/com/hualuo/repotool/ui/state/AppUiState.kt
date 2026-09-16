@@ -4,6 +4,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.hualuo.engine.github.GitHubCiClient
+import com.hualuo.engine.github.GitHubRun
 import com.hualuo.engine.store.SessionStore
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
 import com.hualuo.repotool.ui.data.DemoConversations
@@ -24,10 +26,13 @@ import kotlin.reflect.KProperty
  *    初值从设置里读，改了就记一笔，落盘时机由界面攒着 flush。
  *  - 设置页里新加的开关走 flag 与 setFlag：键名由数据表带过来，不占字段位。
  *  - 设置页里的真文本走 text 与 setText：同样按键名，落盘按 settingsRevision 去抖。
- *  - 回合流真消息住 chat（ChatRuntime）：发送走真网络，busy 也从它读，不再单独一个演示布尔。
+ *  - 回合流真消息住 chat（ChatRuntime）：发送走真网络，busy 也从它读，不再单独一个演示布尔；
+ *    历史上限与系统指令同刀接进（砍数出声、system 排最前）。
  *  - **会话库（M2 接线）**：store 不为 null 时，启动**同步**接上最近一次会话（没有异步首读，
  *    白屏和「多进几次才出来」没有土壤）、抽屉列表来自真库、新建/删除都动真文件；
  *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
+ *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
+ *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
  * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys、SettingsCatalog 与 ChatRuntime。
@@ -121,15 +126,16 @@ class AppUiState(
     // ── 回合流真运行层 ──────────────────────────────────────────────────────
 
     /**
-     * 真说过的话与生成槽都住这里（契约见 ChatRuntime），会话仓同刀接进。
-     * 「网关失败自动重发」那个真开关当场从 flag 通道读——两边共用一份事实，不各记各的。
-     * 必须具名传：尾随 lambda 会绑到 ChatRuntime 的最后一个参数（clock，返回 Long），
+     * 真说过的话与生成槽都住这里（契约见 ChatRuntime），会话仓与上下文喂养同刀接进。
+     * 三个真开关全部具名传：尾随 lambda 会绑到 ChatRuntime 的最后一个参数（clock），
      * 拿开关去尾随就是拿 Boolean 冒充 Long——CI 编译段抓到过，别再犯。
      */
     val chat = ChatRuntime(
         persist,
         autoRetryCostly = { flag(RETRY_COSTLY_KEY, RETRY_COSTLY_DEFAULT) },
         store = store,
+        maxHistoryTurns = { readInt(UiKeys.MAX_HISTORY, ChatRuntime.MAX_HISTORY_TURNS).coerceIn(1, 500) },
+        systemPrompt = { persist.load(ChatRuntime.KEY_SYSTEM_PROMPT)?.trim().orEmpty() },
     )
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
@@ -139,10 +145,9 @@ class AppUiState(
      * 发送钮的统一入口（Composer 只管叫，规矩收在状态层一处，纯 JVM 可测）：
      *  - 空草稿不空发，出声说明；
      *  - 超过 [MAX_PROMPT_CHARS] 字符拒发——单条超大粘贴是把上下文窗口顶爆的最快方式。
-     *    这道闸按字符管「单条」，ChatRuntime 的 40 条护栏按条数管「总量」，各补各的盲区；
-     *    上限是保守的工程值不是 token 精算——客户端算不准各家的窗口，
-     *    能算准且必须做的是「不许无限大」+ 真超限时报中文出路（见 GenerationError）。
-     *  - 过了闸才交 [chat.send]，发出去草稿清空（清动作本身也记设置文件，防重开冒草稿）。
+     *    这道闸按字符管「单条」，历史护栏按条数管「总量」，各补各的盲区；
+     *  - 过了闸才交 [chat.send]；**砍了历史必须当场出声**（家规：砍数上屏）；
+     *    发出去草稿清空（清动作本身也记设置文件，防重开冒草稿）。
      */
     fun sendCurrentInput() {
         val text = input
@@ -155,7 +160,81 @@ class AppUiState(
             return
         }
         chat.send(text, currentModel)
+        if (chat.lastTrimmed > 0) {
+            toast("上下文装不下：砍了 ${chat.lastTrimmed} 条旧话才发（上限在「历史裁剪」里调）")
+        }
         input = ""
+    }
+
+    // ── 仓库CI（GitHub 只读） ───────────────────────────────────────────────
+
+    private val ciClient = GitHubCiClient()
+
+    var ciBusy by mutableStateOf(false)
+        private set
+    var ciRuns by mutableStateOf(emptyList<GitHubRun>())
+        private set
+    var ciBadEntries by mutableStateOf(0)
+        private set
+    var ciError by mutableStateOf<String?>(null)
+        private set
+    var ciRepoLabel by mutableStateOf(DEFAULT_GITHUB_REPO)
+        private set
+    /** 「检查更新」的一句话结论；null = 还没查过。 */
+    var updateNote by mutableStateOf<String?>(null)
+        private set
+
+    private fun githubToken(): String? =
+        persist.load(UiKeys.GITHUB_TOKEN)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** 拉默认分支最近的 workflow runs。失败/坏条目都摆在明面上，不冒充成功。 */
+    fun refreshRepoCi() {
+        if (ciBusy) return
+        val repo = persist.load(UiKeys.GITHUB_REPO)?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_GITHUB_REPO
+        val token = githubToken()
+        ciBusy = true
+        ciError = null
+        ciRepoLabel = repo
+        Thread({
+            val snapshot = runCatching { ciClient.latestRuns(repo, token) }.getOrElse {
+                ciBusy = false
+                ciError = "拉不动 GitHub（${it.message ?: "出错了"}）"
+                return@Thread
+            }
+            ciRuns = snapshot.runs
+            ciBadEntries = snapshot.badEntries
+            ciError = snapshot.error
+            ciBusy = false
+        }, "hualuo-ci").start()
+    }
+
+    /** 进页时才拉；已有数据或正在拉就不重复。 */
+    fun refreshRepoCiIfStale() {
+        if (ciRuns.isEmpty() && !ciBusy) refreshRepoCi()
+    }
+
+    /** 拿当前版本对 GitHub 最新发布版：有新版/已最新/没发布过/查不到，四态各说各话。 */
+    fun checkUpdate() {
+        if (ciBusy) return
+        val repo = persist.load(UiKeys.GITHUB_REPO)?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_GITHUB_REPO
+        val token = githubToken()
+        ciBusy = true
+        Thread({
+            val result = runCatching { ciClient.latestRelease(repo, token) }.getOrElse {
+                ciBusy = false
+                updateNote = "查不动（${it.message ?: "出错了"}）"
+                return@Thread
+            }
+            ciBusy = false
+            updateNote = when {
+                result.error != null -> "查不到：${result.error}"
+                result.notFound -> "GitHub 上还没有发布版，跳过对比"
+                else -> {
+                    val tag = result.release?.tag ?: "?"
+                    if (tag == versionLabel.trim()) "已是最新（$tag）" else "有新版：$tag（当前 ${versionLabel}）"
+                }
+            }
+        }, "hualuo-update").start()
     }
 
     // ── 仍是演示态的字段 ────────────────────────────────────────────────────
@@ -388,6 +467,9 @@ class AppUiState(
     companion object {
         /** 没设置过时的默认模型（真接线后由模型清单决定，这里只是不空着）。 */
         const val DEFAULT_MODEL = "qwen3.8-flash"
+
+        /** 仓库CI 默认看的仓库（设置「GitHub 工作台」里可改）。 */
+        const val DEFAULT_GITHUB_REPO = "xf8410/hualuo-repo-tool"
 
         /**
          * 单条消息字符上限。选 5 万的理由：几万字的整篇粘贴对几乎所有对话模型都还在

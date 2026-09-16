@@ -73,4 +73,11 @@ object UiKeys {
     const val CODE_EXEC_ON = "ui.code_exec_on"
     const val RELAY_ON = "ui.relay_on"
     const val LOCK_TO_CONVERSATION = "ui.lock_to_conversation"
+
+    /** 一次喂模型的历史上限（条）。存文本数字，读不懂回 40，范围 1-500 在读方收口。 */
+    const val MAX_HISTORY = "ui.max_history_turns"
+
+    /** GitHub 只读两格（仓库CI 页与「检查更新」用）。首次上线 2026-09-16。 */
+    const val GITHUB_REPO = "github.repo"
+    const val GITHUB_TOKEN = "github.token"
 }
