@@ -13,7 +13,12 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      android:name=.HualuoApplication（0.6.0）：设置/会话库/界面状态挂进程，
+      Activity 重建（切出再回来、转屏）只是重新接上同一个状态——「切出就断生成」的病根。
+    -->
     <application
+        android:name=".HualuoApplication"
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="@string/app_name"

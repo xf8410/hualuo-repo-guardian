@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hualuo.repotool.HualuoApplication
 import com.hualuo.repotool.R
 import com.hualuo.repotool.backup.BackupGateway
 import com.hualuo.repotool.ui.chat.ChatScreen
@@ -52,7 +54,6 @@ import com.hualuo.repotool.ui.observe.ObserveScreen
 import com.hualuo.repotool.ui.repo.RepoScreen
 import com.hualuo.repotool.ui.settings.SettingsOverlay
 import com.hualuo.repotool.ui.state.AppUiState
-import com.hualuo.repotool.ui.state.createUiPersistence
 import com.hualuo.repotool.ui.tasks.TasksScreen
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
@@ -79,37 +80,43 @@ private val NavTabIcons = mapOf(
     NavTab.Observe to R.drawable.ic_nav_observe,
 )
 
+/** 生成中的细忙条：2dp 高的一条主色，告诉人「还在跑」。 */
+private val BusyBarAlpha = 0.55f
+
 /**
  * 根界面：顶栏（菜单钮 / 页名 / ctx 账本）+ 五页内容 + 输入区（仅回合流）+ 底栏五签，
  * 上面盖抽屉、设置层、弹层、toast。所有浮层都是「壳内」的 Box 层：
  * 外壳锁高、滚动只发生在各层内部（原型漂移病的根治，Compose 版同方）。
  *
+ * **状态挂进程不挂界面（0.6.0）**：AppUiState 从 HualuoApplication（进程单例）拿，
+ * 不再 remember 新建——切出 App（回桌面/转屏）让 Activity 重建时，拿到的是**同一个**
+ * 状态实例：生成中的流照跑、半截话和忙灯原样接上。「切出去对话就停/失败」的病根。
+ * remember(kernel) 只是防重组期反复取值，实例本身不依赖它。
+ *
  * 图形一律 vector drawable（用户拍板：UI 不是表情，要画图）。tint 走主题色：
  * 选中主色、未选次要灰，跟文字同一条规则。
  *
- * 持久化从这里进：启动时读一份设置（读不懂会带原因退化，不炸界面），
- * 之后界面字段变了就攒着，停 AUTO_SAVE_DEBOUNCE_MS 落一次盘，离开时再兜一次。
- * 会话库同刀进：bundle.store 交给 AppUiState，启动同步接上最近会话（M2 接线）。
+ * 持久化从这里进：bundle 由内核持有（全进程一份），启动通知经 consumeStartupNotice
+ * 取走即没——Activity 重建不再复读同一条「设置读不懂」。界面字段变了照样攒着，
+ * 停 AUTO_SAVE_DEBOUNCE_MS 落一次盘，离开时再兜一次。
  * 看护清单里除了逐个字段，还有 state.settingsRevision——真文本（提供商地址密钥那类）
  * 每改一次推一格修订号，这里只看这一个数：文本键以后增减，看护点都不用跟着改。
- * （修订号住在 AppUiState 的文本通道上，不在 ChatRuntime——上一版把引用路径写错，
- * CI 编译段当场抓出：state.chat.settingsRevision 是不存在的。）
  * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默；
  * 会话落盘的岔子（storeIssue）同规矩：写不进就是「重开就丢」，必须出声。
  *
  * 备份（数据控制）的桥也架在这里：设置子页的按钮只发动作请求（state.pendingDataAction），
  * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult，选择器结果回来后
- * 网关流式进出、状态层走活通道应用，各管一段。
- * **三个备份动作全在后台线程跑**（大会计在主线程做文件 IO 就是 ANR/闪退——旧 Agora 的病，
- * 2026-09-16 拍板根治）：先 toast「正在做」，完事再 toast 结果。
+ * 网关在后台线程流式进出、状态层走活通道应用，各管一段（主线程做大会计 IO 是
+ * ANR/闪退病根，0.5.0 根治）。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
 @Composable
 fun HualuoApp(versionLabel: String) {
     val context = LocalContext.current
-    val bundle = remember(context) { createUiPersistence(context) }
-    val state = remember(bundle) { AppUiState(bundle.persistence, bundle.store) }
+    // 进程单例：Activity 怎么死都拿到同一个内核、同一个状态
+    val kernel = remember(context) { context.applicationContext as HualuoApplication }
+    val state = remember(kernel) { kernel.uiState }
     state.versionLabel = versionLabel
 
     // 数据控制的三个系统选择器（导出=建文档、导入=选文件、旧包=选文件）；结果一律出声，不静默
@@ -177,9 +184,9 @@ fun HualuoApp(versionLabel: String) {
         }
     }
 
-    // 启动通知（设置文件读不懂 / 会话库没建成）：只弹一次
-    LaunchedEffect(bundle.notice) {
-        bundle.notice?.let { state.toast(it) }
+    // 启动通知（设置文件读不懂 / 会话库没建成）：取走即没，进程活着只出一次声
+    LaunchedEffect(kernel) {
+        kernel.consumeStartupNotice()?.let { state.toast(it) }
     }
 
     // 会话落盘岔子：写不进必须出声（正文还在屏上，但重开就丢——人得知道这事）
@@ -226,6 +233,15 @@ fun HualuoApp(versionLabel: String) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopBar(state)
+                // 生成中的细忙条：状态挂进程后切出去也照跑，回来这条还在（或已经没了）
+                if (state.busy) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(Accent.copy(alpha = BusyBarAlpha)),
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)
