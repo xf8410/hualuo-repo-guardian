@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubCiClient
 import com.hualuo.engine.github.GitHubRun
 import com.hualuo.engine.store.SessionStore
+import com.hualuo.repotool.backup.BackupGateway
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
 import com.hualuo.repotool.ui.data.DemoConversations
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
@@ -33,6 +34,9 @@ import kotlin.reflect.KProperty
  *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
  *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
+ *  - **备份（数据控制）**：按钮只发出动作请求（[pendingDataAction]），系统文件选择器在
+ *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] 走活通道进——
+ *    绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
  *  - 传 UiPersistence.None（默认）时行为与接线前逐字一致，纯 JVM 测试就这么跑。
  *
  * 键名进过真机就不许改（改了老设置读不到），清单在 UiKeys、SettingsCatalog 与 ChatRuntime。
@@ -235,6 +239,67 @@ class AppUiState(
                 }
             }
         }, "hualuo-update").start()
+    }
+
+    // ── 备份（数据控制；动作桥接与文件选择器在 RootScreen） ─────────────────
+
+    /**
+     * 数据控制页按钮点下的动作（export/import/import_agora）。设置子页的按钮只发请求，
+     * 系统文件选择器（SAF）归 RootScreen 开——纯 JVM 状态层不认识安卓的 ActivityResult。
+     */
+    var pendingDataAction by mutableStateOf<String?>(null)
+        private set
+
+    fun requestDataAction(key: String) {
+        pendingDataAction = key
+    }
+
+    fun clearPendingDataAction() {
+        pendingDataAction = null
+    }
+
+    /**
+     * 把导入的备份应用进**活通道**：设置逐键 save（活通道是唯一事实，绕过它直接写文件
+     * 会被下一次 flush 用旧值盖掉）；会话已由网关落盘，这里只把账报出来。
+     * 返回一句话给 toast；修订号推一格 + 立即落盘，界面与盘上同时吃到新值。
+     *
+     * 属性解析必须喂 StringReader：Properties.load(InputStream) 按 ISO-8859-1 解码，
+     * 中文值全会变乱码——CI 测试段抓过（run 35099409305），别改回字节流。
+     */
+    fun applyImportedBackup(backup: BackupGateway.ImportedBackup): String {
+        if (!backup.formatOk) {
+            return buildString {
+                append("这不是本应用导出的备份包（格式或版本对不上）：没有导入任何东西")
+                if (backup.warnings.isNotEmpty()) append("；").append(backup.warnings.joinToString("；"))
+            }
+        }
+        var applied = 0
+        val settingsText = backup.settingsText ?: ""
+        if (settingsText.isNotEmpty()) {
+            val props = java.util.Properties()
+            val loadFailure = runCatching { props.load(java.io.StringReader(settingsText)) }
+                .exceptionOrNull()
+            if (loadFailure != null) {
+                // 设置坏了不挡会话：会话账必须照样报全
+                return "备份里的设置读不懂（${loadFailure.message ?: "格式不对"}）：" +
+                    "设置没动、会话 ${backup.sessionsImported} 份已入库" +
+                    backup.warnings.joinToString("；", prefix = "；")
+            }
+            for (name in props.stringPropertyNames()) {
+                persist.save(name, props.getProperty(name))
+                applied += 1
+            }
+        }
+        settingsRevision += 1
+        val issues = persistenceMessages()
+        val flushFailure = flushPersistence()
+        return buildString {
+            append("导入完成：设置 $applied 项、会话 ${backup.sessionsImported} 份")
+            if (backup.sessionsSkipped > 0) append("、重名会话跳过 ${backup.sessionsSkipped} 份（原来的保留）")
+            if (backup.warnings.isNotEmpty()) append("；").append(backup.warnings.joinToString("；"))
+            if (issues.isNotEmpty()) append("；设置提示：").append(issues.joinToString("；"))
+            if (flushFailure != null) append("；设置没存上：").append(flushFailure)
+        }
     }
 
     // ── 仍是演示态的字段 ────────────────────────────────────────────────────

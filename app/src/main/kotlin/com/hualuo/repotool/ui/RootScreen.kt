@@ -1,5 +1,7 @@
 package com.hualuo.repotool.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.R
+import com.hualuo.repotool.backup.BackupGateway
 import com.hualuo.repotool.ui.chat.ChatScreen
 import com.hualuo.repotool.ui.chat.Composer
 import com.hualuo.repotool.ui.chat.SheetsLayer
@@ -94,6 +97,10 @@ private val NavTabIcons = mapOf(
  * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默；
  * 会话落盘的岔子（storeIssue）同规矩：写不进就是「重开就丢」，必须出声。
  *
+ * 备份（数据控制）的桥也架在这里：设置子页的按钮只发动作请求（state.pendingDataAction），
+ * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult，选择器结果回来后
+ * 网关流式进出、状态层走活通道应用，各管一段。
+ *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
 @Composable
@@ -102,6 +109,44 @@ fun HualuoApp(versionLabel: String) {
     val bundle = remember(context) { createUiPersistence(context) }
     val state = remember(bundle) { AppUiState(bundle.persistence, bundle.store) }
     state.versionLabel = versionLabel
+
+    // 数据控制的两个系统选择器（导出=建文档、导入=选文件）；结果一律出声，不静默
+    val exportBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        val failure = if (uri == null) {
+            null
+        } else {
+            runCatching { BackupGateway.exportTo(context, uri, state.versionLabel) }
+                .getOrElse { "导出失败：${it.message ?: "写不进去"}" }
+        }
+        state.toast(failure ?: "备份已导出（设置 + 全部会话）")
+        state.clearPendingDataAction()
+    }
+    val importBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) {
+            state.clearPendingDataAction()
+        } else {
+            val outcome = runCatching { BackupGateway.readImport(context, uri) }
+                .getOrElse {
+                    BackupGateway.ImportedBackup(
+                        false, null, 0, 0,
+                        listOf("读不了这个文件：${it.message ?: "打不开"}"),
+                    )
+                }
+            state.toast(state.applyImportedBackup(outcome))
+            state.clearPendingDataAction()
+        }
+    }
+    LaunchedEffect(state.pendingDataAction) {
+        when (val action = state.pendingDataAction) {
+            "export" -> exportBackup.launch("hualuo-backup-${state.versionLabel.replace(" ", "-")}.zip")
+            "import" -> importBackup.launch(arrayOf("application/zip", "application/octet-stream"))
+            else -> Unit
+        }
+    }
 
     // 启动通知（设置文件读不懂 / 会话库没建成）：只弹一次
     LaunchedEffect(bundle.notice) {
@@ -180,7 +225,7 @@ fun HualuoApp(versionLabel: String) {
                 DrawerOverlay(state)
             }
 
-            // 设置层（右滑入，盖满整壳）
+            // 设置层（右滑入，盖满整壳；滑出方向与滑入对称，都是从右缘走）
             AnimatedVisibility(
                 visible = state.settingsOpen,
                 enter = slideInHorizontally(tween(220)) { it },

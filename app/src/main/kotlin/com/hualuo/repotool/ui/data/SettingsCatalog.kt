@@ -14,7 +14,7 @@ import com.hualuo.repotool.ui.state.UiKeys
  * 为什么分两个文件：演示表是原型的逐行翻译，改它就得同时对原型；而这里每一项都对应设置文件里
  * 一个真键名，关掉 App 再开还在。合并在渲染时做，两边互不污染。
  *
- * 规矩一：能接真电的项一律用 PersistedSwitch / PersistedText，不许再用演示态 ——
+ * 规矩一：能接真电的项一律用 PersistedSwitch / PersistedText / 带动作键的 Button，不许再用演示态 ——
  * 后者状态只活在 remember 里，拿它冒充设置就是「绿勾勾撒谎」的同款病。
  * 规矩二：图标只写 IconKey 键名，字形住 res/values/icons.xml（家规，闸门 NoEmojiInSourceTest）。
  * 规矩三：键名跟着**用它的运行层**要（provider 四键来自 ChatRuntime 的常量），
@@ -136,6 +136,29 @@ val RealSubPages: Map<String, SubPage> = mapOf(
                 "CI 提醒：每 15 分钟在后台拍一次 GitHub，有新 run 出结果就发通知栏（红绿都报）。" +
                     "关掉就完全静默。Android 13+ 首开 App 会问一次通知权限，拒过的话去系统设置里开，" +
                     "这里不会反复弹。",
+            ),
+        ),
+    ),
+    // 覆盖演示表「数据控制」页：导出/导入是真动作（系统文件选择器 + 流式备份包）。
+    "datactl" to SubPage(
+        "数据控制",
+        listOf(
+            SubField.Button(
+                "导出备份",
+                actionKey = "export",
+            ),
+            SubField.Button(
+                "导入备份（覆盖同名设置，重名会话跳过）",
+                actionKey = "import",
+            ),
+            SubField.Note(
+                "备份包含：全部设置 + 会话库（一个会话一个文件），导出成一个 zip。" +
+                    "导入时设置以备份为准（同名键覆盖、新键补齐），重名会话原样保留不动；" +
+                    "两条账都会当场报给你。",
+            ),
+            SubField.Note(
+                "旧 Agora（魔改版）的备份格式暂时不认——导不进去不是你操作错。" +
+                    "把旧备份文件给到，转换器就补上；在新格式上先聊着，会话一个字都在。",
             ),
         ),
     ),

@@ -86,8 +86,11 @@ sealed class SubField {
      * 主按钮：文字必给，图标可选（同样只写键名）。
      * 原型里按钮上那个下载图形原先是拼在文案里的字符，现在拆成 iconKey，
      * 渲染时按「图标 + 空格 + 文字」摆，外观不变。
+     *
+     * actionKey 非空 = 真动作：点下去经 AppUiState.requestDataAction 发动作请求
+     * （由根界面开系统选择器/执行），不给就是演示态按钮。
      */
-    data class Button(val text: String, val iconKey: IconKey? = null) : SubField()
+    data class Button(val text: String, val iconKey: IconKey? = null, val actionKey: String? = null) : SubField()
 
     data class Radio(val label: String, val options: List<RadioChoice>, val selId: String) : SubField()
 }

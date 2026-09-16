@@ -71,6 +71,9 @@ import com.hualuo.repotool.ui.theme.SubInk
  * text/setText——编辑即生效，落盘由界面按修订号去抖（不一个字写一次盘）。
  * 挂不上组的真设置项由 `orphanAdditions()` 在这一页顶部喊出来。
  *
+ * 按钮（SubField.Button）同分两态：actionKey 为空是演示态（点了只说明「接线后生效」）；
+ * 非空就经 state.requestDataAction 发动作请求，由根界面开系统选择器/执行真动作。
+ *
  * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
  *
  * 家规提醒：单选圆环的 Modifier.size 之前缺 layout.size 的 import，红在 app 编译段
@@ -409,7 +412,11 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                         .padding(bottom = 4.dp)
                         .clip(RoundedCornerShape(20.dp))
                         .background(Accent)
-                        .clickable { state.toast("已提交（演示，接线后生效）") }
+                        .clickable {
+                            val action = f.actionKey
+                            if (action == null) state.toast("已提交（演示，接线后生效）")
+                            else state.requestDataAction(action)
+                        }
                         .padding(horizontal = 18.dp, vertical = 10.dp),
                 ) {
                     Text(f.text, color = Color.White, fontSize = 13.5.sp)
