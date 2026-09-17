@@ -1,5 +1,6 @@
 package com.hualuo.repotool.ui
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -43,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.HualuoApplication
 import com.hualuo.repotool.R
 import com.hualuo.repotool.backup.BackupGateway
+import com.hualuo.repotool.courier.CourierDelivery
 import com.hualuo.repotool.ui.chat.ChatScreen
 import com.hualuo.repotool.ui.chat.Composer
 import com.hualuo.repotool.ui.chat.SheetsLayer
@@ -54,6 +56,7 @@ import com.hualuo.repotool.ui.observe.ObserveScreen
 import com.hualuo.repotool.ui.repo.RepoScreen
 import com.hualuo.repotool.ui.settings.SettingsOverlay
 import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.state.CourierPick
 import com.hualuo.repotool.ui.tasks.TasksScreen
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
@@ -105,11 +108,12 @@ private val BusyBarAlpha = 0.55f
  * 任何一次「没存上」或「设置里有读不懂的项」都必须走 toast，不许静默；
  * 会话落盘的岔子（storeIssue）同规矩：写不进就是「重开就丢」，必须出声。
  *
- * 备份（数据控制）的桥也架在这里：设置子页的按钮只发动作请求（state.pendingDataAction），
- * 系统文件选择器（SAF）归这层开——纯状态层不认识 ActivityResult。选择器结果回来后
- * 网关在后台线程流式进出，进度经 kernel.backupProgress（进程级）画在顶栏下面，
- * 收尾必须写 null 收行；结果走状态层活通道应用并出声，各管一段（主线程做大会计
- * IO 是 ANR/闪退病根，0.5.0 根治；黑盒等待是 0.6.0 根治）。
+ * 备份（数据控制）与文件投递（0.7.0，长任务页）的桥都架在这里：设置页/长任务页的按钮
+ * 只发动作请求（state.pendingDataAction），系统文件选择器（SAF）归这层开——纯状态层
+ * 不认识 ActivityResult。选择器结果回来后网关/投递在后台线程流式进出，进度经
+ * kernel.backupProgress / kernel.courierProgress（进程级）画在顶栏下面，收尾必须写 null
+ * 收行；结果走状态层活通道应用并出声，各管一段（主线程做大会计 IO 是 ANR/闪退病根，
+ * 0.5.0 根治；黑盒等待是 0.6.0 根治）。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -192,11 +196,61 @@ fun HualuoApp(versionLabel: String) {
             state.clearPendingDataAction()
         }, "hualuo-agora").start()
     }
+
+    // 文件投递的两个系统选择器（0.7.0 B 段）：选一批文件 / 选一棵目录树。
+    // 授权尽量拿持久化（runCatching：个别提供方不给就算了——投递在本进程内做完，不赌跨进程重启）；
+    // 选完只把「选了什么」记进状态层批账本，真名与大小在投递收集时才 stat。
+    val courierPickFiles = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isEmpty()) {
+            state.clearPendingDataAction()
+            return@rememberLauncherForActivityResult
+        }
+        uris.forEach { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+        }
+        state.addCourierPicks(
+            uris.map { CourierPick(it.lastPathSegment ?: it.toString(), it.toString(), false) },
+        )
+        state.toast("已选 ${uris.size} 个文件：点「开始投递」发走")
+        state.clearPendingDataAction()
+    }
+    val courierPickTree = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri == null) {
+            state.clearPendingDataAction()
+            return@rememberLauncherForActivityResult
+        }
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        state.addCourierPicks(
+            listOf(CourierPick(uri.lastPathSegment ?: "目录", uri.toString(), true)),
+        )
+        state.toast("已选一棵目录：点「开始投递」发走")
+        state.clearPendingDataAction()
+    }
+
     LaunchedEffect(state.pendingDataAction) {
         when (val action = state.pendingDataAction) {
             "export" -> exportBackup.launch("hualuo-backup-${state.versionLabel.replace(" ", "-")}.zip")
             "import" -> importBackup.launch(arrayOf("application/zip", "application/octet-stream"))
             "import_agora" -> importAgora.launch(arrayOf("*/*"))
+            AppUiState.ACTION_COURIER_PICK_FILES -> courierPickFiles.launch(arrayOf("*/*"))
+            AppUiState.ACTION_COURIER_PICK_TREE -> courierPickTree.launch(null)
+            AppUiState.ACTION_COURIER_DELIVER -> Thread({
+                CourierDelivery.run(context, kernel, state)
+            }, "hualuo-courier").start()
             else -> Unit
         }
     }
@@ -250,17 +304,9 @@ fun HualuoApp(versionLabel: String) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopBar(state)
-                // 长活进度行（备份导出/导入/兑换）：内核持有，Activity 重建不丢
-                kernel.backupProgress?.let { progress ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(CardBg)
-                            .padding(horizontal = 14.dp, vertical = 5.dp),
-                    ) {
-                        Text(progress, fontSize = 11.5.sp, color = SubInk)
-                    }
-                }
+                // 长活进度行（备份导出/导入/兑换、文件投递）：内核持有，Activity 重建不丢
+                ProgressLine(kernel.backupProgress)
+                ProgressLine(kernel.courierProgress)
                 // 生成中的细忙条：状态挂进程后切出去也照跑，回来这条还在（或已经没了）
                 if (state.busy) {
                     Box(
@@ -312,6 +358,20 @@ fun HualuoApp(versionLabel: String) {
             ConfirmDialog(state)
             ToastBubble(state)
         }
+    }
+}
+
+/** 长活进度行（0.6.0 起的形状）：顶栏下面一条 CardBg 窄条，null 不占位。备份与文件投递共用。 */
+@Composable
+private fun ProgressLine(text: String?) {
+    if (text == null) return
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CardBg)
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+    ) {
+        Text(text, fontSize = 11.5.sp, color = SubInk)
     }
 }
 

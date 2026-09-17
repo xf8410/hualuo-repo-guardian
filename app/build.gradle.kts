@@ -88,6 +88,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // SAF 目录树递归收集（文件投递 B 段）：DocumentFile 负责 tree URI 的列目录、stat 与开流
+    implementation("androidx.documentfile:documentfile:1.0.1")
     // CI 红绿提醒的后台轮询（2026-09-16 接回旧 Agora 魔改版就有的功能）：
     // WorkManager 15 分钟一拍，不引入前台服务（manifest 纪律：永远没有 <service>）
     implementation("androidx.work:work-runtime-ktx:2.9.1")

@@ -139,6 +139,37 @@ val RealSubPages: Map<String, SubPage> = mapOf(
             ),
         ),
     ),
+    // 新增真子页（0.7.0 文件投递）：长任务页投递读这三格；令牌留空借用「GitHub 工作台」那把。
+    "courier" to SubPage(
+        "文件投递",
+        listOf(
+            SubField.PersistedText(
+                "目标仓库",
+                UiKeys.COURIER_REPO,
+                "owner/name，粘整条仓库链接也认",
+            ),
+            SubField.PersistedText(
+                "分支",
+                UiKeys.COURIER_BRANCH,
+                "默认 main",
+            ),
+            SubField.PersistedText(
+                "访问令牌",
+                UiKeys.COURIER_TOKEN,
+                "私有仓库必填；留空借用「GitHub 工作台」的令牌",
+                secret = true,
+            ),
+            SubField.Note(
+                "长任务页选好文件/目录后「开始投递」：按文件边界打成 zip 分卷（每卷约 32MB，" +
+                    "单文件不劈开），逐卷传进上面的仓库，收尾写一份 manifest.json" +
+                    "（每卷内容 + 每文件 SHA-256 + 总账），收方按账还原与校验。",
+            ),
+            SubField.Note(
+                "一批最多 20 卷（约 640MB）；同一批重投会覆盖同名卷（重投 = 原地修复）。" +
+                    "令牌只进请求头，不进任何报错、日志与界面文本。",
+            ),
+        ),
+    ),
     // 覆盖演示表「数据控制」页：导出/导入/旧包兑换全是真动作（系统文件选择器 + 后台线程）。
     "datactl" to SubPage(
         "数据控制",
@@ -179,6 +210,15 @@ val RealSectionAdditions: Map<String, List<SettingsItem>> = mapOf(
             "网关把连接掐了怎么办；要不要自动重发",
             null,
             "retry",
+        ),
+    ),
+    "s-data" to listOf(
+        SettingsItem(
+            IconKey.Clip,
+            "文件投递",
+            "把手机上的文件分卷投进私有仓，manifest 全账",
+            null,
+            "courier",
         ),
     ),
 )

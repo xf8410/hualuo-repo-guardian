@@ -55,4 +55,11 @@ class HualuoApplication : Application() {
      * 不许挂着上一次的旧账骗人。
      */
     var backupProgress by mutableStateOf<String?>(null)
+
+    /**
+     * 长活进度行（文件投递，0.7.0 同款接法）：「正在收集 12 个文件」「正在投递卷 3/5」这类。
+     * 与 backupProgress 同一条道理：投递跑几分钟，Activity 重建（转屏/切出）进度行不许丢；
+     * 投递线程写、界面读；收尾必须写 null 收行，不许挂着上一次的旧账骗人。
+     */
+    var courierProgress by mutableStateOf<String?>(null)
 }

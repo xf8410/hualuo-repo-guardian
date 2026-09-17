@@ -84,4 +84,13 @@ object UiKeys {
     /** CI 红绿提醒的开关与记账（后台轮询见 notify/CiNotifyWorker）。首次上线 2026-09-16。 */
     const val CI_NOTIFY = "ui.ci_notify_on"
     const val CI_LAST_RUN_ID = "ci.last_run_id"
+
+    /**
+     * 文件投递（courier）三格：目标仓/分支/令牌。首次上线 2026-09-17。
+     * 令牌刻意单独留格而不是只靠 github.token：投递仓与 CI 观察仓可以是两个仓；
+     * 但投递那格留空时借用 github.token（同一把钥匙不逼人填两遍），借用关系见 AppUiState.courierToken。
+     */
+    const val COURIER_REPO = "courier.repo"
+    const val COURIER_BRANCH = "courier.branch"
+    const val COURIER_TOKEN = "courier.token"
 }

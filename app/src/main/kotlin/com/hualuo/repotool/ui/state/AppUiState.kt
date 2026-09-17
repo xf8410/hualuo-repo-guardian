@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubCiClient
 import com.hualuo.engine.github.GitHubRun
+import com.hualuo.engine.github.normalizeGitHubRepo
 import com.hualuo.engine.search.SearchOutcome
 import com.hualuo.engine.search.WebSearchClient
 import com.hualuo.engine.search.WebSearchResult
@@ -21,6 +22,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.reflect.KProperty
+
+/** 文件投递批里的一条：用户选进来的一个文件或一棵目录树。 */
+data class CourierPick(
+    /** 屏上显示用的短标签（选文件时是系统选择器给的路径尾段，收集真名在投递时做）。 */
+    val label: String,
+    /** content URI 的字符串形状。状态层不认识安卓的 Uri 类，转回去是根界面那层的事。 */
+    val uri: String,
+    /** true = 一棵目录树（OpenDocumentTree 的结果），投递时递归收集。 */
+    val isTree: Boolean,
+)
 
 /**
  * 全局界面状态（v13.1 的 JS 变量一对一翻译）。
@@ -39,6 +50,8 @@ import kotlin.reflect.KProperty
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
  *  - **工具页真电（网页搜索）**：免费档 DuckDuckGo（引擎件 WebSearchClient，fetch 缝隙
  *    让引擎测试不碰真网，这里给的就是真网）；结果真数据、失败出声不冒充。
+ *  - **长任务页真电（文件投递）**：选文件/选目录只发动作请求（[pendingDataAction] 桥上走），
+ *    收集与分卷投递在根界面的后台线程（CourierDelivery）；目标仓/分支/令牌在设置「文件投递」。
  *  - **备份（数据控制）**：按钮只发出动作请求（[pendingDataAction]），系统文件选择器在
  *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] / [applyAgoraImport]
  *    走活通道进——绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
@@ -293,10 +306,95 @@ class AppUiState(
         }, "hualuo-update").start()
     }
 
+    // ── 长任务页真电：文件投递（courier；SAF 与投递执行在 RootScreen/CourierDelivery） ──
+
+    /**
+     * 已选进投递批的条目。只活在本进程、不落盘：SAF 授权跟着进程走，进程死了
+     * 重新选一遍才靠得住，把 URI 装进设置文件是假安心。想清空点「清空已选」。
+     */
+    var courierPicks by mutableStateOf(emptyList<CourierPick>())
+        private set
+
+    /** 投递是否在跑：按钮看它禁点，桥上看它拒绝重复发车。 */
+    var courierBusy by mutableStateOf(false)
+        private set
+
+    /** 最近一次投递的收场话（含收集报告与落点）；null = 本进程还没投过。 */
+    var courierNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 根界面把选择器的结果交进来（一次选中的可以是一个或多个）。 */
+    fun addCourierPicks(picks: List<CourierPick>) {
+        if (picks.isEmpty()) return
+        courierPicks = courierPicks + picks
+    }
+
+    /** 清空已选批（不影响仓里已经投出去的卷）。 */
+    fun clearCourierPicks() {
+        courierPicks = emptyList()
+    }
+
+    /**
+     * 长任务页「选文件」「选目录」：只发动作请求，系统选择器归 RootScreen 开
+     * （备份同款桥：纯 JVM 状态层不认识 ActivityResult）。
+     */
+    fun requestCourierPick(tree: Boolean) {
+        if (courierBusy) {
+            toast("正在投递，先等这批跑完")
+            return
+        }
+        pendingDataAction = if (tree) ACTION_COURIER_PICK_TREE else ACTION_COURIER_PICK_FILES
+    }
+
+    /** 目标仓：设置「文件投递」里配，粘整条仓库链接也认（与仓库CI 同一套 normalize）。没配对返回 null。 */
+    fun courierRepo(): String? = normalizeGitHubRepo(text(UiKeys.COURIER_REPO).trim())
+
+    /** 目标分支：没配按 main 走（投自家仓的默认分支是最常见的一格省略）。 */
+    fun courierBranch(): String = text(UiKeys.COURIER_BRANCH).trim().ifBlank { "main" }
+
+    /** 令牌：文件投递那格留空就借用「GitHub 工作台」的令牌（同一把钥匙不逼人填两遍）。 */
+    fun courierToken(): String =
+        text(UiKeys.COURIER_TOKEN).trim().ifBlank { text(UiKeys.GITHUB_TOKEN).trim() }
+
+    /**
+     * 长任务页「开始投递」：先过三道闸（批里有货、仓写法对、令牌在手），过了才发动作请求——
+     * 真正的收集与分卷投递在 RootScreen 的后台线程（状态层不认识 ContentResolver）。
+     * 缺哪道闸就指名道姓出声，绝不空发请求去撞网络。
+     */
+    fun requestCourierDeliver() {
+        if (courierBusy) return
+        if (courierPicks.isEmpty()) {
+            toast("还没选要投的东西：先点「选文件」或「选目录」")
+            return
+        }
+        if (courierRepo() == null) {
+            toast("目标仓库没配对：去设置「文件投递」填 owner/name（粘整条仓库链接也认）")
+            return
+        }
+        if (courierToken().isEmpty()) {
+            toast("令牌不在手：私有仓库投递要令牌，去设置「文件投递」或「GitHub 工作台」填")
+            return
+        }
+        pendingDataAction = ACTION_COURIER_DELIVER
+    }
+
+    /** 投递发车（接线层在后台线程里叫）：忙灯亮、旧收场话清掉——旧账不许挂着顶数。 */
+    fun beginCourier() {
+        courierBusy = true
+        courierNote = null
+    }
+
+    /** 投递收场（接线层叫）：忙灯灭、结论入账。成功失败都走这里，不许静默。 */
+    fun finishCourier(note: String) {
+        courierBusy = false
+        courierNote = note
+    }
+
     // ── 备份（数据控制；动作桥接与文件选择器在 RootScreen） ─────────────────
 
     /**
-     * 数据控制页按钮点下的动作（export/import/import_agora）。设置子页的按钮只发请求，
+     * 数据控制页与文件投递共用的动作桥（export/import/import_agora、courier_pick_files、
+     * courier_pick_tree、courier_deliver）。设置子页的按钮只发请求，
      * 系统文件选择器（SAF）归 RootScreen 开——纯 JVM 状态层不认识安卓的 ActivityResult。
      */
     var pendingDataAction by mutableStateOf<String?>(null)
@@ -632,5 +730,18 @@ class AppUiState(
          * 窗口内，但一 MB 级的整文件直塞必炸——闸门拦的是「事故」不是「长文」。
          */
         const val MAX_PROMPT_CHARS = 50_000
+
+        /** 文件投递的动作键（pendingDataAction 桥上走）：RootScreen 认这三个。 */
+        const val ACTION_COURIER_PICK_FILES = "courier_pick_files"
+        const val ACTION_COURIER_PICK_TREE = "courier_pick_tree"
+        const val ACTION_COURIER_DELIVER = "courier_deliver"
+
+        /**
+         * 投递目标前缀：courier/时间戳/，斜杠结尾（引擎件的规矩，前缀由调用方给）。
+         * 一批一个目录：重投同批是原地覆盖（引擎件的「重投 = 原地修复」），
+         * 换一批自动换新目录，不同批互不打架。
+         */
+        fun buildCourierPrefix(nowMs: Long): String =
+            "courier/" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(nowMs)) + "/"
     }
 }

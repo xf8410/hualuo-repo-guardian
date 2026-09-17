@@ -5,7 +5,8 @@ import com.hualuo.repotool.ui.model.RadioChoice
 import com.hualuo.repotool.ui.model.SettingsItem
 import com.hualuo.repotool.ui.model.SettingsSection
 
-// 设置页信息架构：照抄 ui/v13.html 的 8 组 27 项。二级页字段表在 SubPages.kt。
+// 设置页信息架构：照抄 ui/v13.html 的 8 组 26 项演示；合并真设置项（SettingsCatalog 追加的
+// 「失败与重试」「文件投递」）后为 8 组 28 项。二级页字段表在 SubPages.kt。
 // 文案规矩（原型页脚）：每项一句大白话说清「干什么、数据去哪」，不许出现「管理 XX」这种绕话。
 // 命名红线：新界面一律不再出现「Agora」字样（地基红线 10），原型里残留的几处已改为「内置/本应用」。
 // 版本行用 %VERSION% 占位，渲染时由界面状态替换——数据文件里同样不许写死版本号。
