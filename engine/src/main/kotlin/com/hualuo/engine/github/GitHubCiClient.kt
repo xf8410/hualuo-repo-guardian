@@ -1,17 +1,13 @@
 package com.hualuo.engine.github
 
-import java.io.ByteArrayOutputStream
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** 一次 GitHub HTTP 的最小回执：状态码 + 有界读进的 body。status=0 = 连都没连上。 */
-data class GitHubHttpResult(val status: Int, val body: String)
+/** 一次 GitHub HTTP 的最小回执：状态码 + 有界读进的 body + 是否被截断。status=0 = 连都没连上。 */
+data class GitHubHttpResult(val status: Int, val body: String, val truncated: Boolean = false)
 
 /** 一条 workflow run 的界面字段（就展示这些，别的字段不进内存）。 */
 data class GitHubRun(
@@ -57,7 +53,7 @@ fun normalizeGitHubRepo(raw: String): String? {
  * 安全规矩：令牌只进请求头，绝不进任何报错、日志与界面文本——错误里只带状态码；
  * 响应有界读（512KB 封顶），GitHub 错误页再大也只取前一段。
  */
-class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = ::httpGet) {
+class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = ::defaultCiFetch) {
 
     /**
      * 默认分支的最近几条 workflow run（新在前是 GitHub 的顺序，这里不再重排）。
@@ -66,7 +62,7 @@ class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = 
     fun latestRuns(repo: String, token: String?, limit: Int = 3): GitHubCiSnapshot {
         val full = normalizeGitHubRepo(repo)
             ?: return GitHubCiSnapshot(emptyList(), 0, "仓库写法不对：要 owner/name（现在是「$repo」）")
-        val result = fetch("$API_ROOT/repos/$full/actions/runs?per_page=${limit.coerceIn(1, 20)}", token)
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/actions/runs?per_page=${limit.coerceIn(1, 20)}", token)
         if (result.status != 200) return GitHubCiSnapshot(emptyList(), 0, httpIssue(result))
         val root = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject
             ?: return GitHubCiSnapshot(emptyList(), 0, "GitHub 回的内容读不懂（200 但不是 JSON）")
@@ -97,7 +93,7 @@ class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = 
     fun latestRelease(repo: String, token: String?): GitHubReleaseResult {
         val full = normalizeGitHubRepo(repo)
             ?: return GitHubReleaseResult(null, false, "仓库写法不对：要 owner/name（现在是「$repo」）")
-        val result = fetch("$API_ROOT/repos/$full/releases/latest", token)
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/releases/latest", token)
         return when {
             result.status == 404 -> GitHubReleaseResult(null, true, null)
             result.status != 200 -> GitHubReleaseResult(null, false, httpIssue(result))
@@ -133,42 +129,9 @@ class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = 
     }
 
     private companion object {
-        const val API_ROOT = "https://api.github.com"
-        const val MAX_BODY_CHARS = 512_000
-
         val json = Json { ignoreUnknownKeys = true }
 
-        /** 有界读：最多 MAX_BODY_CHARS 字符，超了就停（不读完整页错误 HTML）。 */
-        fun readBounded(stream: java.io.InputStream): String {
-            val out = ByteArrayOutputStream()
-            val buf = ByteArray(8 * 1024)
-            var total = 0
-            while (total < MAX_BODY_CHARS) {
-                val n = stream.read(buf, 0, minOf(buf.size, MAX_BODY_CHARS - total))
-                if (n < 0) break
-                out.write(buf, 0, n)
-                total += n
-            }
-            return out.toString("UTF-8")
-        }
-
-        /** 默认实现：15 秒超时、令牌只进头、异常折成 status=0（body 带原因）。 */
-        fun httpGet(url: String, token: String?): GitHubHttpResult = try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 15_000
-            conn.readTimeout = 15_000
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("accept", "application/vnd.github+json")
-            conn.setRequestProperty("user-agent", "hualuo-repo-tool")
-            if (!token.isNullOrBlank()) conn.setRequestProperty("authorization", "Bearer $token")
-            val status = conn.responseCode
-            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.use { readBounded(it) } ?: ""
-            GitHubHttpResult(status, body)
-        } catch (e: IOException) {
-            GitHubHttpResult(0, e.message ?: "网络不通")
-        } catch (e: Exception) {
-            GitHubHttpResult(0, e.message ?: "请求没发出去")
-        }
+        /** 老签名保留（双参）：HTTP 细节全在 GitHubHttp.kt 一个实现里，这里只做转发。 */
+        fun defaultCiFetch(url: String, token: String?): GitHubHttpResult = githubHttpGet(url, token)
     }
 }

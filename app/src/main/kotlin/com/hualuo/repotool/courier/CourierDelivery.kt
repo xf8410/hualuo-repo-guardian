@@ -18,9 +18,9 @@ import com.hualuo.repotool.ui.state.CourierPick
  * 分工照备份那套桥：状态层只发动作请求（纯 JVM 可测），这里认 ContentResolver 与
  * DocumentFile（安卓件不进状态层），RootScreen 在后台线程里调 [run]——大会计 IO 不进主线程。
  *
- * 流程：选中的 URI 收集成候选（单文件 stat、目录树 DocumentFile 递归）→ 准入
+ * 流程：选中的 URI 收集成候选（单文件 stat、目录树 DocumentFile 递归）-> 准入
  * （FileAdmission：没有类型白名单，一条都没有，拒的只有「读不到/不是文件/名字放不进」这类硬事实）
- * → FileCourierClient 按文件边界打 zip 分卷逐卷投递 → manifest.json 全账 →
+ * -> FileCourierClient 按文件边界打 zip 分卷逐卷投递 -> manifest.json 全账 ->
  * 结果连同收集报告一律出声（收了几个、跳过几个、落在哪里），不许装糊涂。
  *
  * 内存纪律（全仓红线）：从头到尾不把整卷或整文件读进内存——文件内容只在引擎打卷与
@@ -125,7 +125,7 @@ object CourierDelivery {
             }
         }
 
-        // 内容只在引擎打卷/上传时按流过路：这里把「候选 → 怎么开流」交给引擎件
+        // 内容只在引擎打卷/上传时按流过路：这里把「候选对应哪条开流地址」交给引擎件
         val files = report.admitted.map { candidate ->
             val uri = uriByCandidate[candidate]
                 ?: return "内部账对不上（候选没有对应的 URI），这批没投：重选一次再试"

@@ -19,7 +19,13 @@ dependencies {
 
 tasks.test {
     useJUnit()
-    // 把每条测试的名字打到 CI 日志里（测试名用中文写的，直接看得懂过了什么）
+    // NoEmojiInSourceTest 会扫到 ../app 的 Kotlin 源码，但 Gradle 的 up-to-date 账本
+    // 默认只登记 engine 自己的输入——app 改了测试却 FROM-CACHE，红闸变瞎
+    // （run 35233839330 的教训：CourierDelivery 里 5 枚箭头在 #39 从缓存里溜过绿闸，
+    // 直到 #41 动了 engine 源码才现形）。把被扫描的目录登记成测试输入：改一个字都重跑。
+    inputs.dir(rootProject.file("app/src/main/kotlin"))
+        .withPropertyName("appSourcesScannedByGuards")
+        .optional()
     testLogging {
         events("passed", "failed", "skipped")
         showStandardStreams = true
