@@ -6,6 +6,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubCiClient
 import com.hualuo.engine.github.GitHubRun
+import com.hualuo.engine.search.SearchOutcome
+import com.hualuo.engine.search.WebSearchClient
+import com.hualuo.engine.search.WebSearchResult
 import com.hualuo.engine.store.SessionStore
 import com.hualuo.repotool.backup.BackupGateway
 import com.hualuo.repotool.ui.data.DemoComposerThumbs
@@ -34,6 +37,8 @@ import kotlin.reflect.KProperty
  *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
  *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
+ *  - **工具页真电（网页搜索）**：免费档 DuckDuckGo（引擎件 WebSearchClient，fetch 缝隙
+ *    让引擎测试不碰真网，这里给的就是真网）；结果真数据、失败出声不冒充。
  *  - **备份（数据控制）**：按钮只发出动作请求（[pendingDataAction]），系统文件选择器在
  *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] / [applyAgoraImport]
  *    走活通道进——绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
@@ -168,6 +173,53 @@ class AppUiState(
             toast("上下文装不下：砍了 ${chat.lastTrimmed} 条旧话才发（上限在「历史裁剪」里调）")
         }
         input = ""
+    }
+
+    // ── 工具页真电：网页搜索（免费档 DuckDuckGo） ───────────────────────────
+
+    /** 工具页搜索框里的词。演示壳转真电的第一格输入。 */
+    var searchQuery by mutableStateOf("")
+
+    /** 正在搜：按钮与提示行都看它。 */
+    var searchBusy by mutableStateOf(false)
+        private set
+
+    /** 最近一次的搜索结果（真数据，引擎件清净过）。 */
+    var searchResults by mutableStateOf(emptyList<WebSearchResult>())
+        private set
+
+    /** 最近一次搜索的收场话（成功报条数，失败给理由）；null = 还没搜过。 */
+    var searchNote by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * 工具页「搜一下」：真网络、真结果、失败出声不冒充（家规）。
+     * 后台线程跑（大会计 IO 不进主线程，ANR 病根的老规矩）；收场一律写回
+     * [searchResults] 与 [searchNote]，成功的旧结果不偷偷留着顶数——失败就明示失败。
+     */
+    fun runWebSearch() {
+        if (searchBusy) return
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            toast("先在框里写要搜什么")
+            return
+        }
+        searchBusy = true
+        searchNote = null
+        Thread({
+            val outcome = WebSearchClient().search(query)
+            searchBusy = false
+            when (outcome) {
+                is SearchOutcome.Ok -> {
+                    searchResults = outcome.results
+                    searchNote = "搜到 ${outcome.results.size} 条（${outcome.query}）"
+                }
+                is SearchOutcome.Failed -> {
+                    searchResults = emptyList()
+                    searchNote = outcome.reason
+                }
+            }
+        }, "hualuo-web-search").start()
     }
 
     // ── 仓库CI（GitHub 只读） ───────────────────────────────────────────────
