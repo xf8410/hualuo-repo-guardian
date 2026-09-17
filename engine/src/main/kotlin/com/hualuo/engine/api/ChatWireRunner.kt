@@ -4,6 +4,7 @@ import com.hualuo.engine.generation.Cancellable
 import com.hualuo.engine.generation.GenerationSlot
 import com.hualuo.engine.generation.IdleWatchdog
 import com.hualuo.engine.http.FailureClass
+import com.hualuo.engine.http.HttpTaxonomy
 import com.hualuo.engine.http.RequestCost
 import com.hualuo.engine.http.RetryDecision
 import com.hualuo.engine.http.RetryPolicy
@@ -37,6 +38,9 @@ sealed class ChatRunResult {
  *  2) 上下文超限永不重发（证据在体里，与状态码无关）——网关拿 502 包着
  *     "Your input exceeds the context window" 也一样：RetryPolicy 靠 body 关键词定性，
  *     这层只负责把「中文出路 + 对方原话证据」完完整整交到界面上；
+ *     0.7.0 补上最后一条漏网：HTTP 200 外壳里裹着 {"error":...} 的流中错误块
+ *     **不过决策表**（事实明确直接出局），所以归因必须在解析器里就地做——
+ *     否则超限错误会顶着「code：message」的平话脸出街，出路话全丢；
  *  3) 任何收场都放槽（runGuarded 兜底，被顶替走 stranded 单独出声）。
  *
  * 线程模型：[run] 设计给**后台线程**调用（内部阻塞读流 + sleeper 等待）；
@@ -230,6 +234,15 @@ class ChatWireRunner(
  *
  * 中途出现 `{"error":...}` 块（200 外壳里的错误）：记下 [streamError] 并收线 ——
  * 这是「对方 HTTP 说 OK、内容说炸了」的经典形状，当成功返回就是骗人。
+ *
+ * **流中错误的归因与设防（0.7.0）**，这条路径不过决策表，所以两件事必须就地做：
+ *  1. **归因**：错误块文本（message + code + type 拼一起）命中上下文超限关键词
+ *     （HttpTaxonomy.isContextOverflow）就翻成 Transport(ContextOverflow)——
+ *     出路话「删历史/开新会话」才接得上；不然 200 外壳裹着超限错误只会平话出街。
+ *     判定用**未打码原文**：打码会在长串里插星号，万一真把关键词拆了就漏判；
+ *  2. **打码**：给人看的 message 一律先过 maskSecrets。错误体是不可信输入，
+ *     有的网关把请求上下文原样回显（内含 api_key/Bearer），providerHttpError 那条
+ *     路早就设了防，这条流中路原来裸奔——密钥绝不外泄没有例外路径。
  */
 class OpenAiSseParser(private val onText: (String) -> Unit) {
 
@@ -271,11 +284,22 @@ class OpenAiSseParser(private val onText: (String) -> Unit) {
         if (payload.isEmpty()) return
         val root = runCatching { json.parseToJsonElement(payload) }.getOrNull() as? JsonObject ?: return
         (root["error"] as? JsonObject)?.let { err ->
-            streamError = GenerationError.Api(
-                code = (err["code"] as? JsonPrimitive)?.contentOrNull,
-                type = (err["type"] as? JsonPrimitive)?.contentOrNull,
-                message = (err["message"] as? JsonPrimitive)?.contentOrNull ?: err.toString(),
-            )
+            val rawMessage = (err["message"] as? JsonPrimitive)?.contentOrNull ?: err.toString()
+            val code = (err["code"] as? JsonPrimitive)?.contentOrNull
+            val type = (err["type"] as? JsonPrimitive)?.contentOrNull
+            // 归因证据 = message + code + type 拼一起（有的家只给 code 不给话）；
+            // 用未打码原文判，打码后判（星号插进关键词）会漏。
+            val evidence = buildString {
+                append(rawMessage)
+                if (!code.isNullOrBlank()) append(' ').append(code)
+                if (!type.isNullOrBlank()) append(' ').append(type)
+            }
+            val safeMessage = maskSecrets(rawMessage)
+            streamError = if (HttpTaxonomy.isContextOverflow(evidence)) {
+                GenerationError.Transport(FailureClass.ContextOverflow, safeMessage)
+            } else {
+                GenerationError.Api(code = code, type = type, message = safeMessage)
+            }
             return
         }
         val choices = root["choices"] as? JsonArray ?: return
