@@ -8,8 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 仓库工作台只读客户端的纯 JVM 契约测试：清单解析、路径编码、读文件（JSON 档拿内容+sha、
- * 超限退 raw 档）、二进制/截断/404/令牌缺失各说各话。fetch 全部注入，绝不碰真网。
+ * 仓库工作台客户端的纯 JVM 契约测试：清单解析、路径编码、读文件（JSON 档拿内容+sha、
+ * 超限退 raw 档）、分支/提交历史、改码提交（sha 对账 + 409 冲突出声）。
+ * fetch/putJson 全部注入，绝不碰真网。
  */
 class GitHubRepoClientTest {
 
@@ -29,7 +30,19 @@ class GitHubRepoClientTest {
         }
     }
 
-    private fun client(fetch: FakeFetch) = GitHubRepoClient(fetch)
+    private class FakePut : (String, String?, String) -> GitHubHttpResult {
+        val urls = ArrayList<String>()
+        val bodies = ArrayList<String>()
+        var next = GitHubHttpResult(200, "{}")
+
+        override fun invoke(url: String, token: String?, body: String): GitHubHttpResult {
+            urls += url
+            bodies += body
+            return next
+        }
+    }
+
+    private fun client(fetch: FakeFetch, put: FakePut = FakePut()) = GitHubRepoClient(fetch, put)
 
     @Test
     fun listMyReposWithoutTokenDoesNotTouchNetwork() {
@@ -177,15 +190,14 @@ class GitHubRepoClientTest {
             "{\"name\":\"big.log\",\"path\":\"big.log\",\"sha\":\"bigsha\"," +
                 "\"size\":2000000,\"encoding\":\"none\",\"content\":\"\"}",
         )
-        // 第二发是 raw 档预览（fetch.next 不变也能用：这里手动换返回值）
         val rawPreview = GitHubHttpResult(200, "head of a big file", truncated = true)
 
-        val file = GitHubRepoClient { url, token, accept, maxChars ->
+        val file = GitHubRepoClient({ url, token, accept, maxChars ->
             fetch.urls += url
             fetch.accepts += accept
             fetch.caps += maxChars
             if (accept == null) fetch.next else rawPreview
-        }.readFile("o/r", "big.log", null, "tok")
+        }).readFile("o/r", "big.log", null, "tok")
 
         assertEquals("head of a big file", file.text)
         assertTrue(file.truncated)
@@ -228,5 +240,130 @@ class GitHubRepoClientTest {
 
         assertNull(file.text)
         assertTrue(file.error!!.contains("404"))
+    }
+
+    @Test
+    fun listBranchesParsesNamesAndShasSortedByName() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(
+            200,
+            "[{\"name\":\"workbench/courier\",\"commit\":{\"sha\":\"sha-c\"}}," +
+                "{\"name\":\"main\",\"commit\":{\"sha\":\"sha-m\"}}," +
+                "{\"nameless\":1}]",
+        )
+        val list = client(fetch).listBranches("o/r", "tok")
+
+        assertNull(list.error)
+        assertEquals(1, list.badEntries)
+        assertEquals(2, list.branches.size)
+        assertEquals("main", list.branches.first().name)
+        assertEquals("sha-m", list.branches.first().commitSha)
+        assertEquals("workbench/courier", list.branches.last().name)
+        assertTrue(fetch.urls.first().contains("/repos/o/r/branches?per_page="))
+    }
+
+    @Test
+    fun listBranchesBadRepoShapeStaysOffline() {
+        val fetch = FakeFetch()
+        val list = client(fetch).listBranches("bad", null)
+
+        assertTrue(list.error!!.contains("owner/name"))
+        assertEquals(0, fetch.urls.size)
+    }
+
+    @Test
+    fun listCommitsParsesFirstLineAuthorDateAndSendsParams() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(
+            200,
+            "[{\"sha\":\"aaa111\",\"commit\":{\"message\":\"修红：箭头改 ASCII\\n\\n正文不该出现\"," +
+                "\"author\":{\"name\":\"xf8410\",\"date\":\"2026-09-17T14:39:21Z\"}}}," +
+                "{\"sha\":\"bbb222\",\"commit\":{\"message\":\"第二刀\",\"author\":{\"name\":\"某人\",\"date\":\"\"}}}," +
+                "{\"broken\":1}]",
+        )
+        val list = client(fetch).listCommits("o/r", "dev branch", "app/src/main/kotlin", "tok")
+
+        assertNull(list.error)
+        assertEquals(1, list.badEntries)
+        assertEquals(2, list.commits.size)
+        assertEquals("aaa111", list.commits.first().sha)
+        assertEquals("修红：箭头改 ASCII", list.commits.first().messageFirstLine)
+        assertEquals("xf8410", list.commits.first().author)
+        val url = fetch.urls.first()
+        assertTrue(url.contains("/repos/o/r/commits?"))
+        assertTrue(url.contains("sha=dev%20branch"))
+        assertTrue(url.contains("path=app/src/main/kotlin"))
+    }
+
+    @Test
+    fun updateFilePutsBase64BodyWithBranchAndSha() {
+        val fetch = FakeFetch()
+        val put = FakePut()
+        put.next = GitHubHttpResult(
+            200,
+            "{\"commit\":{\"sha\":\"commit-9\"},\"content\":{\"sha\":\"content-8\"}}",
+        )
+        val written = client(fetch, put).updateFile("o/r", "src/a b.kt", "dev", "new body", "改一行", "old-sha", "tok")
+
+        assertNull(written.error)
+        assertEquals("commit-9", written.commitSha)
+        assertEquals("content-8", written.contentSha)
+        assertEquals("/repos/o/r/contents/src/a%20b.kt", put.urls.first().substringAfter("api.github.com"))
+        val body = put.bodies.first()
+        assertTrue(body.contains("\"message\":\"改一行\""))
+        assertTrue(body.contains("\"branch\":\"dev\""))
+        assertTrue(body.contains("\"sha\":\"old-sha\""))
+        // base64("new body") = bmV3IGJvZHk=
+        assertTrue(body.contains("bmV3IGJvZHk="))
+        assertEquals(0, fetch.urls.size)
+    }
+
+    @Test
+    fun updateFileWithoutShaOmitsTheField() {
+        val put = FakePut()
+        put.next = GitHubHttpResult(200, "{\"commit\":{\"sha\":\"c\"},\"content\":{\"sha\":\"s\"}}")
+        client(FakeFetch(), put).updateFile("o/r", "a.kt", null, "x", "新建内容", null, "tok")
+
+        assertFalse(put.bodies.first().contains("sha"))
+        assertTrue(put.bodies.first().contains("\"branch\":\"main\""))
+    }
+
+    @Test
+    fun updateFileBlankMessageIsRefusedOffline() {
+        val put = FakePut()
+        val written = client(FakeFetch(), put).updateFile("o/r", "a.kt", null, "x", "   ", "s", "tok")
+
+        assertNull(written.commitSha)
+        assertTrue(written.error!!.contains("message"))
+        assertEquals(0, put.urls.size)
+    }
+
+    @Test
+    fun updateFileWithoutTokenIsRefusedOffline() {
+        val put = FakePut()
+        val written = client(FakeFetch(), put).updateFile("o/r", "a.kt", null, "x", "msg", "s", null)
+
+        assertTrue(written.error!!.contains("令牌"))
+        assertEquals(0, put.urls.size)
+    }
+
+    @Test
+    fun updateFileConflictSaysReopenNotOverwrite() {
+        val put = FakePut()
+        put.next = GitHubHttpResult(409, "{\"message\":\"conflict\"}")
+        val written = client(FakeFetch(), put).updateFile("o/r", "a.kt", null, "x", "msg", "old", "tok")
+
+        assertNull(written.commitSha)
+        assertTrue(written.error!!.contains("被别人改过"))
+        assertTrue(written.error!!.contains("409"))
+    }
+
+    @Test
+    fun updateFileBinaryContentIsRefusedOffline() {
+        val put = FakePut()
+        val written = client(FakeFetch(), put).updateFile("o/r", "a.bin", null, "x\u0000y", "msg", "s", "tok")
+
+        assertTrue(written.error!!.contains("文本"))
+        assertEquals(0, put.urls.size)
     }
 }

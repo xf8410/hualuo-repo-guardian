@@ -59,5 +59,32 @@ fun githubHttpGet(url: String, token: String?, accept: String? = null, maxChars:
     GitHubHttpResult(0, e.message ?: "请求没发出去", false)
 }
 
+/**
+ * PUT JSON 实现（contents 改码提交用）：请求体一次性给全（文本量级，不流式），
+ * 30 秒读超时（提交比读慢是正常的），其余安全规矩与 GET 相同。
+ */
+fun githubHttpPutJson(url: String, token: String?, jsonBody: String): GitHubHttpResult = try {
+    val conn = URL(url).openConnection() as HttpURLConnection
+    conn.connectTimeout = 15_000
+    conn.readTimeout = 30_000
+    conn.requestMethod = "PUT"
+    conn.setRequestProperty("accept", "application/vnd.github+json")
+    conn.setRequestProperty("content-type", "application/json")
+    conn.setRequestProperty("user-agent", "hualuo-repo-tool")
+    if (!token.isNullOrBlank()) conn.setRequestProperty("authorization", "Bearer $token")
+    val bytes = jsonBody.toByteArray(Charsets.UTF_8)
+    conn.doOutput = true
+    conn.setFixedLengthStreamingMode(bytes.size)
+    conn.outputStream.use { it.write(bytes) }
+    val status = conn.responseCode
+    val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+    val body = stream?.use { readBounded(it, GITHUB_MAX_BODY_CHARS) }
+    GitHubHttpResult(status, body?.text ?: "", body?.truncated ?: false)
+} catch (e: IOException) {
+    GitHubHttpResult(0, e.message ?: "网络不通", false)
+} catch (e: Exception) {
+    GitHubHttpResult(0, e.message ?: "请求没发出去", false)
+}
+
 /** 有界读的封顶：512K 字符（全仓纪律：响应必须有界）。 */
 const val GITHUB_MAX_BODY_CHARS = 512_000

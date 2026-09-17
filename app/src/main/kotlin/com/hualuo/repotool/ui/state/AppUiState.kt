@@ -5,9 +5,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubCiClient
-import com.hualuo.engine.github.GitHubEntry
-import com.hualuo.engine.github.GitHubRepoClient
-import com.hualuo.engine.github.GitHubRepoSummary
 import com.hualuo.engine.github.GitHubRun
 import com.hualuo.engine.github.normalizeGitHubRepo
 import com.hualuo.engine.search.SearchOutcome
@@ -51,8 +48,8 @@ data class CourierPick(
  *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
  *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
- *  - **仓库工作台（浏览，只读）**：自己的仓（要令牌）与别人的公开仓清单 + contents 逐级浏览 +
- *    文件原文预览（sha 与超限账一起回来，给 B 段改码备好账本）；改码提交在 B 段另接。
+ *  - **仓库工作台（浏览 + 改码）**：整体住 [repo]（[RepoWorkbenchState] 状态舱，
+ *    999 行红线拆出来的：清单/浏览/分支/提交历史/文件预览与改码提交）。
  *  - **工具页真电（网页搜索）**：免费档 DuckDuckGo（引擎件 WebSearchClient，fetch 缝隙
  *    让引擎测试不碰真网，这里给的就是真网）；结果真数据、失败出声不冒充。
  *  - **长任务页真电（文件投递）**：选文件/选目录只发动作请求（[pendingDataAction] 桥上走），
@@ -167,6 +164,17 @@ class AppUiState(
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
     val busy: Boolean get() = chat.busy
+
+    // ── 仓库工作台（状态舱在 RepoWorkbenchState：浏览/分支/历史/改码） ──────
+
+    /**
+     * 仓库工作台的状态舱（999 行红线拆出来的）：只吃两样外界——
+     * 设置里的 GitHub 令牌与这台 toast 喇叭，其余全部自持。
+     */
+    val repo = RepoWorkbenchState(
+        loadToken = { persist.load(UiKeys.GITHUB_TOKEN)?.trim()?.takeIf { it.isNotEmpty() } },
+        toast = { msg -> toast(msg) },
+    )
 
     /**
      * 发送钮的统一入口（Composer 只管叫，规矩收在状态层一处，纯 JVM 可测）：
@@ -309,219 +317,6 @@ class AppUiState(
                 }
             }
         }, "hualuo-update").start()
-    }
-
-    // ── 仓库工作台（浏览，只读）：清单 + contents 逐级浏览 + 文件预览 ───────
-
-    private val repoClient = GitHubRepoClient()
-
-    /** 我的仓库清单是否在拉。 */
-    var myReposBusy by mutableStateOf(false)
-        private set
-
-    /** 我的仓库清单（真数据）。 */
-    var myRepos by mutableStateOf(emptyList<GitHubRepoSummary>())
-        private set
-
-    /** 清单的一句话收场（成功报条数，失败给理由）；null = 还没拉过。 */
-    var myReposNote by mutableStateOf<String?>(null)
-        private set
-
-    /** 拉「我的仓库」（含私有，要令牌）。没令牌不出声拉网，一句话指路去设置。 */
-    fun refreshMyRepos() {
-        if (myReposBusy) return
-        val token = githubToken()
-        if (token.isNullOrEmpty()) {
-            myReposNote = "看自己的仓库要令牌：去设置「GitHub 工作台」填（看别人的不用）"
-            return
-        }
-        myReposBusy = true
-        Thread({
-            val list = runCatching { repoClient.listMyRepos(token) }.getOrElse {
-                myReposBusy = false
-                myReposNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
-                return@Thread
-            }
-            myReposBusy = false
-            myRepos = list.repos
-            myReposNote = when {
-                list.error != null -> list.error
-                list.badEntries > 0 -> "拉到 ${list.repos.size} 个仓库；另有 ${list.badEntries} 条读不懂已跳过"
-                else -> "拉到 ${list.repos.size} 个仓库"
-            }
-        }, "hualuo-repos").start()
-    }
-
-    /** 进页才拉；已有数据或正在拉就不重复。 */
-    fun refreshMyReposIfStale() {
-        if (myRepos.isEmpty() && !myReposBusy) refreshMyRepos()
-    }
-
-    /** 正在浏览的仓（owner/name）；空串 = 没在浏览。 */
-    var browseRepo by mutableStateOf("")
-        private set
-
-    /** 浏览用的分支；null = 仓库默认分支。 */
-    var browseRef by mutableStateOf<String?>(null)
-        private set
-
-    /** 当前目录路径（空 = 根）。 */
-    var browsePath by mutableStateOf("")
-        private set
-
-    /** 回退栈：进目录前把原路径压进来，「返回上一级」弹出。 */
-    var browseTrail by mutableStateOf(emptyList<String>())
-        private set
-
-    /** 当前目录条目（真数据，目录在前）。 */
-    var browseEntries by mutableStateOf(emptyList<GitHubEntry>())
-        private set
-
-    /** 浏览忙灯。 */
-    var browseBusy by mutableStateOf(false)
-        private set
-
-    /** 浏览的一句话收场；null = 没话。 */
-    var browseNote by mutableStateOf<String?>(null)
-        private set
-
-    /** 进一个仓库，从根开始浏览。 */
-    fun browseInto(repo: String) {
-        if (browseBusy) return
-        val target = normalizeGitHubRepo(repo) ?: run {
-            toast("仓库写法不对：要 owner/name（粘整条链接也认）")
-            return
-        }
-        closeFileView()
-        browseRepo = target
-        browsePath = ""
-        browseTrail = emptyList()
-        loadBrowse()
-    }
-
-    /** 点目录条目：压栈进目录。文件条目不吃这套（预览走 openBrowseFile）。 */
-    fun browseDown(entry: GitHubEntry) {
-        if (browseBusy || !entry.isDir) return
-        browseTrail = browseTrail + browsePath
-        browsePath = entry.path
-        loadBrowse()
-    }
-
-    /** 返回上一级；已在根就没有上一级。 */
-    fun browseUp() {
-        if (browseBusy) return
-        val prev = browseTrail.lastOrNull() ?: return
-        browseTrail = browseTrail.dropLast(1)
-        browsePath = prev
-        loadBrowse()
-    }
-
-    /** 退出浏览（清单还在，重进不用重拉）。 */
-    fun exitBrowse() {
-        if (browseBusy) return
-        closeFileView()
-        browseRepo = ""
-        browsePath = ""
-        browseTrail = emptyList()
-        browseEntries = emptyList()
-        browseNote = null
-    }
-
-    /** 看别人的仓：输入框里的 owner/name（粘整条链接也认），过了写法闸就进浏览。 */
-    fun browseOtherRepo() {
-        if (browseBusy) return
-        browseInto(otherRepoQuery)
-    }
-
-    /** 「看别人的仓」输入框的词（不落盘：这是次导航动作，不是设置）。 */
-    var otherRepoQuery by mutableStateOf("")
-
-    private fun loadBrowse() {
-        browseBusy = true
-        val repo = browseRepo
-        val path = browsePath
-        val ref = browseRef
-        val token = githubToken()
-        Thread({
-            val result = runCatching { repoClient.browse(repo, path, ref, token) }.getOrElse {
-                browseBusy = false
-                browseNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
-                return@Thread
-            }
-            browseBusy = false
-            browseEntries = result.entries
-            browseNote = when {
-                result.error != null -> result.error
-                result.badEntries > 0 -> "有 ${result.badEntries} 条读不懂已跳过"
-                else -> null
-            }
-        }, "hualuo-browse").start()
-    }
-
-    /** 预览中的文件路径；空 = 没开预览。 */
-    var fileViewPath by mutableStateOf("")
-        private set
-
-    /** 文件原文（JSON 档解出来的，有界；null = 没内容，理由在 note）。 */
-    var fileViewText by mutableStateOf<String?>(null)
-        private set
-
-    /** 预览的一句话收场（字符数/截断/二进制/失败理由）。 */
-    var fileViewNote by mutableStateOf<String?>(null)
-        private set
-
-    /** 预览忙灯。 */
-    var fileViewBusy by mutableStateOf(false)
-        private set
-
-    /** 预览文件的当前 blob sha（B 段改码提交的对账凭据）；null = 这份内容不许改。 */
-    var fileViewSha by mutableStateOf<String?>(null)
-        private set
-
-    /** 预览文件是否超限（超限只给前一段预览，改码在界面拦）。 */
-    var fileViewTooBig by mutableStateOf(false)
-        private set
-
-    /** 点文件条目：拉内容预览（内容 + sha + 超限账一起回；二进制与截断都明说）。 */
-    fun openBrowseFile(entry: GitHubEntry) {
-        if (browseBusy || fileViewBusy || entry.isDir) return
-        val repo = browseRepo
-        if (repo.isEmpty()) return
-        fileViewBusy = true
-        fileViewPath = entry.path
-        fileViewText = null
-        fileViewNote = null
-        fileViewSha = null
-        fileViewTooBig = false
-        val ref = browseRef
-        val token = githubToken()
-        Thread({
-            val result = runCatching { repoClient.readFile(repo, entry.path, ref, token) }.getOrElse {
-                fileViewBusy = false
-                fileViewNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
-                return@Thread
-            }
-            fileViewBusy = false
-            fileViewText = result.text
-            fileViewSha = result.sha
-            fileViewTooBig = result.tooBig
-            fileViewNote = when {
-                result.error != null -> result.error
-                result.tooBig && result.truncated -> "超限文件：只读了前 ${result.charCount} 字符（不给在 App 里改）"
-                result.truncated -> "只读了前 ${result.charCount} 字符（文件太大，有界读封顶）"
-                else -> "${result.charCount} 字符"
-            }
-        }, "hualuo-fileview").start()
-    }
-
-    /** 收起文件预览。 */
-    fun closeFileView() {
-        fileViewPath = ""
-        fileViewText = null
-        fileViewNote = null
-        fileViewSha = null
-        fileViewTooBig = false
-        fileViewBusy = false
     }
 
     // ── 长任务页真电：文件投递（courier；SAF 与投递执行在 RootScreen/CourierDelivery） ──

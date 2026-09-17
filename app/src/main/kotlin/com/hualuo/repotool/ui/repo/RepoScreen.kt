@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -31,6 +32,7 @@ import com.hualuo.repotool.ui.components.HCard
 import com.hualuo.repotool.ui.components.LRow
 import com.hualuo.repotool.ui.model.Tone
 import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.Ink
 import com.hualuo.repotool.ui.theme.SubInk
@@ -38,8 +40,9 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
  * 仓库CI页（v13 #p-repo）：**真数据**——GitHub Actions 最近几条 run + 检查更新，
- * 0.7.x 起再加仓库工作台（只读浏览）：自己的仓清单（要令牌）、别人的公开仓、
- * contents 逐级浏览、文件原文预览。改码提交在 B 段另接，这里先不画饼。
+ * 外加仓库工作台（状态舱 state.repo）：自己的仓清单（要令牌）、别人的公开仓、
+ * contents 逐级浏览、分支切换、提交历史（维护记录）、文件原文预览、**改码提交**
+ * （sha 对账、冲突出声不硬盖）。
  *
  * 数据通道：进页拉一次（已有数据不重复拉），「刷新」行手动重拉；
  * 失败（403 提示去填令牌 / 404 提示核仓库名 / 连不上）与坏条目都摆在明面上，
@@ -50,7 +53,7 @@ fun RepoScreen(state: AppUiState) {
     // 进页拉一次；LaunchedEffect(Unit) 每次进这个 tab 只跑一遍，不刷屏
     LaunchedEffect(Unit) {
         state.refreshRepoCiIfStale()
-        state.refreshMyReposIfStale()
+        state.repo.refreshMyReposIfStale()
     }
     Column(
         modifier = Modifier
@@ -109,35 +112,35 @@ fun RepoScreen(state: AppUiState) {
         HCard {
             CardTitle("我的仓库（含私有，要令牌）")
             when {
-                state.myReposBusy && state.myRepos.isEmpty() -> Text(
+                state.repo.myReposBusy && state.repo.myRepos.isEmpty() -> Text(
                     "正在拉仓库清单…",
                     fontSize = 13.sp,
                     color = SubInk,
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
-                state.myRepos.isEmpty() && state.myReposNote != null -> Text(
-                    state.myReposNote ?: "",
+                state.repo.myRepos.isEmpty() && state.repo.myReposNote != null -> Text(
+                    state.repo.myReposNote ?: "",
                     fontSize = 12.5.sp,
                     color = WarnAmber,
                     modifier = Modifier.padding(vertical = 6.dp),
                 )
-                else -> state.myRepos.forEach { repo ->
+                else -> state.repo.myRepos.forEach { repo ->
                     LRow(
                         repo.fullName,
                         (if (repo.isPrivate) "私有" else "公开") + " · " + repo.updatedAt.take(10),
                         chevron = true,
                     ) {
-                        state.closeFileView()
-                        state.browseInto(repo.fullName)
+                        state.repo.closeFileView()
+                        state.repo.browseInto(repo.fullName)
                     }
                 }
             }
-            state.myReposNote?.let { note ->
-                if (state.myRepos.isNotEmpty()) {
+            state.repo.myReposNote?.let { note ->
+                if (state.repo.myRepos.isNotEmpty()) {
                     Text(note, fontSize = 11.5.sp, color = SubInk, modifier = Modifier.padding(vertical = 4.dp))
                 }
             }
-            LRow("刷新清单", chevron = true) { state.refreshMyRepos() }
+            LRow("刷新清单", chevron = true) { state.repo.refreshMyRepos() }
         }
 
         // 看别人的仓（公开只读）：owner/name，粘整条链接也认
@@ -151,12 +154,12 @@ fun RepoScreen(state: AppUiState) {
                         .background(Bg)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    if (state.otherRepoQuery.isEmpty()) {
+                    if (state.repo.otherRepoQuery.isEmpty()) {
                         Text("owner/name，粘整条链接也认", fontSize = 13.sp, color = SubInk)
                     }
                     BasicTextField(
-                        value = state.otherRepoQuery,
-                        onValueChange = { state.otherRepoQuery = it },
+                        value = state.repo.otherRepoQuery,
+                        onValueChange = { state.repo.otherRepoQuery = it },
                         textStyle = TextStyle(fontSize = 13.sp, color = Ink),
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -170,97 +173,262 @@ fun RepoScreen(state: AppUiState) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .background(Bg)
-                        .clickable { state.browseOtherRepo() }
+                        .clickable { state.repo.browseOtherRepo() }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 )
             }
         }
 
-        // 浏览卡：进了仓库才出现；目录在前，「返回上一级」走回退栈
-        if (state.browseRepo.isNotEmpty()) {
+        // 浏览卡：进了仓库才出现；分支切换 + 目录树 + 提交历史（维护记录）
+        if (state.repo.browseRepo.isNotEmpty()) {
             HCard {
-                CardTitle("浏览 " + state.browseRepo + (if (state.browseRef != null) " @" + state.browseRef else ""))
+                CardTitle(
+                    "浏览 " + state.repo.browseRepo +
+                        (if (state.repo.browseRef != null) " @" + state.repo.browseRef else ""),
+                )
                 Text(
-                    "/" + state.browsePath,
+                    "/" + state.repo.browsePath,
                     fontSize = 11.5.sp,
                     color = SubInk,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
+                // 分支切换（官方 App 最欠的一格）：切了路径回根重新走
+                LRow("切换分支", state.repo.browseRef ?: "默认分支", chevron = true) {
+                    state.repo.toggleBranchPicker()
+                }
+                if (state.repo.branchPickerOpen) {
+                    when {
+                        state.repo.branchListBusy -> Text(
+                            "正在拉分支…",
+                            fontSize = 12.5.sp,
+                            color = SubInk,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        state.repo.branchList.isEmpty() && state.repo.branchListNote != null -> Text(
+                            state.repo.branchListNote ?: "",
+                            fontSize = 12.sp,
+                            color = WarnAmber,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        else -> state.repo.branchList.forEach { branch ->
+                            LRow(branch.name, branch.commitSha.take(7), chevron = true) {
+                                state.repo.switchBranch(branch.name)
+                            }
+                        }
+                    }
+                    state.repo.branchListNote?.let { note ->
+                        if (state.repo.branchList.isNotEmpty()) {
+                            Text(note, fontSize = 11.sp, color = WarnAmber, modifier = Modifier.padding(vertical = 2.dp))
+                        }
+                    }
+                }
                 when {
-                    state.browseBusy -> Text(
+                    state.repo.browseBusy -> Text(
                         "正在拉目录…",
                         fontSize = 13.sp,
                         color = SubInk,
                         modifier = Modifier.padding(vertical = 8.dp),
                     )
-                    state.browseEntries.isEmpty() && state.browseNote != null -> Text(
-                        state.browseNote ?: "",
+                    state.repo.browseEntries.isEmpty() && state.repo.browseNote != null -> Text(
+                        state.repo.browseNote ?: "",
                         fontSize = 12.5.sp,
                         color = WarnAmber,
                         modifier = Modifier.padding(vertical = 6.dp),
                     )
-                    state.browseEntries.isEmpty() -> Text(
+                    state.repo.browseEntries.isEmpty() -> Text(
                         "这个目录是空的",
                         fontSize = 12.5.sp,
                         color = SubInk,
                         modifier = Modifier.padding(vertical = 6.dp),
                     )
-                    else -> state.browseEntries.forEach { entry ->
+                    else -> state.repo.browseEntries.forEach { entry ->
                         LRow(
                             entry.name,
                             if (entry.isDir) "目录" else formatBytes(entry.sizeBytes),
                             chevron = true,
                         ) {
-                            if (entry.isDir) state.browseDown(entry) else state.openBrowseFile(entry)
+                            if (entry.isDir) state.repo.browseDown(entry) else state.repo.openBrowseFile(entry)
                         }
                     }
                 }
-                state.browseNote?.let { note ->
-                    if (state.browseEntries.isNotEmpty()) {
+                state.repo.browseNote?.let { note ->
+                    if (state.repo.browseEntries.isNotEmpty()) {
                         Text(note, fontSize = 11.5.sp, color = WarnAmber, modifier = Modifier.padding(vertical = 4.dp))
                     }
                 }
-                if (state.browseTrail.isNotEmpty()) {
-                    LRow("返回上一级", chevron = true) { state.browseUp() }
+                if (state.repo.browseTrail.isNotEmpty()) {
+                    LRow("返回上一级", chevron = true) { state.repo.browseUp() }
                 }
-                LRow("退出浏览", chevron = true) { state.exitBrowse() }
+                // 提交历史（维护记录）：当前分支最近干了什么，新在前
+                LRow(
+                    "提交历史",
+                    if (state.repo.commitsOpen) {
+                        "收起"
+                    } else if (state.repo.commits.isNotEmpty()) {
+                        "${state.repo.commits.size} 条"
+                    } else {
+                        null
+                    },
+                    chevron = true,
+                ) { state.repo.toggleCommits() }
+                if (state.repo.commitsOpen) {
+                    when {
+                        state.repo.commitsBusy -> Text(
+                            "正在拉提交历史…",
+                            fontSize = 12.5.sp,
+                            color = SubInk,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        state.repo.commits.isEmpty() -> Text(
+                            state.repo.commitsNote ?: "还没有提交记录",
+                            fontSize = 12.sp,
+                            color = if (state.repo.commitsNote != null) WarnAmber else SubInk,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        else -> state.repo.commits.forEach { commit ->
+                            LRow(
+                                commit.sha.take(7),
+                                (commit.messageFirstLine.take(28) + " · " + commit.author).trim(),
+                                chevron = false,
+                            )
+                        }
+                    }
+                    state.repo.commitsNote?.let { note ->
+                        if (state.repo.commits.isNotEmpty()) {
+                            Text(note, fontSize = 11.sp, color = WarnAmber, modifier = Modifier.padding(vertical = 2.dp))
+                        }
+                    }
+                    LRow("刷新历史", chevron = true) { state.repo.refreshCommits() }
+                }
+                LRow("退出浏览", chevron = true) { state.repo.exitBrowse() }
             }
         }
 
-        // 文件预览卡：原文，二进制/截断/超限都明说
-        if (state.fileViewPath.isNotEmpty()) {
+        // 文件预览 + 改码卡：原文，二进制/截断/超限都明说；编辑提交走 sha 对账
+        if (state.repo.fileViewPath.isNotEmpty()) {
             HCard {
-                CardTitle("文件：" + state.fileViewPath)
+                CardTitle("文件：" + state.repo.fileViewPath)
                 when {
-                    state.fileViewBusy -> Text(
+                    state.repo.fileViewBusy -> Text(
                         "正在拉文件…",
                         fontSize = 13.sp,
                         color = SubInk,
                         modifier = Modifier.padding(vertical = 8.dp),
                     )
-                    state.fileViewText == null -> Text(
-                        state.fileViewNote ?: "没有内容可给",
+                    state.repo.fileViewText == null -> Text(
+                        state.repo.fileViewNote ?: "没有内容可给",
                         fontSize = 12.5.sp,
                         color = WarnAmber,
                         modifier = Modifier.padding(vertical = 6.dp),
                     )
                     else -> {
-                        state.fileViewNote?.let { note ->
+                        state.repo.fileViewNote?.let { note ->
                             Text(note, fontSize = 11.5.sp, color = SubInk, modifier = Modifier.padding(bottom = 4.dp))
                         }
-                        Text(
-                            state.fileViewText ?: "",
-                            fontSize = 11.sp,
-                            color = Ink,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                        )
+                        if (!state.repo.editingOpen) {
+                            Text(
+                                state.repo.fileViewText ?: "",
+                                fontSize = 11.sp,
+                                color = Ink,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                            )
+                            val editable = state.repo.fileViewSha != null &&
+                                !state.repo.fileViewTooBig &&
+                                !state.repo.fileViewTruncated
+                            if (editable) {
+                                LRow("编辑这个文件", chevron = true) { state.repo.startEditing() }
+                            } else {
+                                Text(
+                                    "这份不给在 App 里改（超限/截断/无 sha 账）：去电脑上改",
+                                    fontSize = 11.5.sp,
+                                    color = SubInk,
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                )
+                            }
+                        } else {
+                            Text(
+                                "编辑中（提交后不可撤回，想清楚再发）",
+                                fontSize = 11.5.sp,
+                                color = WarnAmber,
+                                modifier = Modifier.padding(vertical = 4.dp),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(170.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Bg)
+                                    .padding(10.dp),
+                            ) {
+                                BasicTextField(
+                                    value = state.repo.editingText,
+                                    onValueChange = { state.repo.editingText = it },
+                                    textStyle = TextStyle(
+                                        fontSize = 11.sp,
+                                        color = Ink,
+                                        fontFamily = FontFamily.Monospace,
+                                    ),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Bg)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                            ) {
+                                if (state.repo.editingMessage.isEmpty()) {
+                                    Text("commit message：改了什么（必填）", fontSize = 13.sp, color = SubInk)
+                                }
+                                BasicTextField(
+                                    value = state.repo.editingMessage,
+                                    onValueChange = { state.repo.editingMessage = it },
+                                    textStyle = TextStyle(fontSize = 13.sp, color = Ink),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            state.repo.editNote?.let { note ->
+                                Spacer(Modifier.height(6.dp))
+                                Text(note, fontSize = 12.sp, color = WarnAmber)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (state.repo.editBusy) SubInk else Accent)
+                                        .clickable(enabled = !state.repo.editBusy) { state.repo.commitEdit() }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                ) {
+                                    Text(
+                                        if (state.repo.editBusy) "提交中…" else "提交改动",
+                                        fontSize = 13.sp,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Bg)
+                                        .clickable(enabled = !state.repo.editBusy) { state.repo.cancelEditing() }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                ) {
+                                    Text("放弃", fontSize = 13.sp, color = Ink)
+                                }
+                            }
+                        }
                     }
                 }
-                LRow("收起", chevron = true) { state.closeFileView() }
+                LRow("收起", chevron = true) { state.repo.closeFileView() }
             }
         }
 
