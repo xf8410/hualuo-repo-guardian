@@ -3,12 +3,13 @@ package com.hualuo.repotool.ui.state
 import com.hualuo.engine.github.GitHubEntry
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * 仓库工作台状态舱的纯 JVM 测试：只钉**不发网就能判**的闸门与账本动作——
- * 写法闸拦在撞网之前、目录/文件分家、回退栈、清场、分支/编辑的离线闸。
+ * 写法闸拦在撞网之前、目录/文件分家、回退栈、清场、分支/编辑/CI 深看的离线闸。
  * 真网络路径由引擎件测试看住。
  */
 class AppUiStateRepoWorkbenchTest {
@@ -74,6 +75,7 @@ class AppUiStateRepoWorkbenchTest {
         assertTrue(s.repo.fileViewPath.isEmpty())
         assertFalse(s.repo.branchPickerOpen)
         assertFalse(s.repo.commitsOpen)
+        assertFalse(s.repo.browseCiOpen)
     }
 
     @Test
@@ -155,5 +157,37 @@ class AppUiStateRepoWorkbenchTest {
         assertFalse(s.repo.editingOpen)
         assertTrue(s.repo.editingText.isEmpty())
         assertTrue(s.repo.editingMessage.isEmpty())
+    }
+
+    @Test
+    fun toggleBrowseCiWithoutBrowseStaysOffline() {
+        val s = AppUiState()
+        s.repo.toggleBrowseCi()
+
+        assertTrue(s.repo.browseCiOpen)
+        assertFalse(s.repo.ciRunsBusy)
+        s.repo.toggleBrowseCi()
+        assertFalse(s.repo.browseCiOpen)
+    }
+
+    @Test
+    fun openRunJobsWithoutBrowseDoesNothing() {
+        val s = AppUiState()
+        s.repo.openRunJobs(77L)
+
+        assertNull(s.repo.ciJobsRunId)
+        assertFalse(s.repo.ciJobsBusy)
+    }
+
+    @Test
+    fun closeBrowseCiClearsAllThreeLayers() {
+        val s = AppUiState()
+        s.repo.closeBrowseCi()
+
+        assertFalse(s.repo.browseCiOpen)
+        assertNull(s.repo.ciJobsRunId)
+        assertTrue(s.repo.ciJobsList.isEmpty())
+        assertNull(s.repo.ciLogJobId)
+        assertNull(s.repo.ciLogText)
     }
 }

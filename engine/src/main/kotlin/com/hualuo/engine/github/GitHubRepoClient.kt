@@ -73,6 +73,26 @@ data class GitHubCommitWritten(
     val error: String?,
 )
 
+/** 一次 CI job 的界面字段（run 里点开看的就是这些）。 */
+data class GitHubJob(
+    val id: Long,
+    val name: String,
+    val status: String,
+    val conclusion: String?,
+    val startedAt: String,
+)
+
+/** run 的 jobs 回执。 */
+data class GitHubJobList(val jobs: List<GitHubJob>, val badEntries: Int, val error: String?)
+
+/** 一段 job 日志：有界读（512K 封顶），truncated 明说——日志再长也不许整段吞内存。 */
+data class GitHubJobLog(
+    val text: String?,
+    val charCount: Int,
+    val truncated: Boolean,
+    val error: String?,
+)
+
 /**
  * 仓库工作台客户端（纯 JVM；fetch/putJson 缝隙注入，JVM 测试不碰网络）。
  *
@@ -83,6 +103,7 @@ data class GitHubCommitWritten(
  *  - 分支/提交历史：branches 与 commits 接口（维护记录与分支切换的账本）；
  *  - 改码提交：PUT contents（message 必填、旧 sha 对账防覆盖别人），409/422 = 有并发改动，
  *    必须原话出声让人重开重改，绝不硬盖；
+ *  - CI 深看：任意仓的 runs（解析与 CI 客户端共用一份）/ run 的 jobs / job 日志（有界读）；
  *  - 令牌只进请求头；失败一律人话（状态码，绝无令牌），绝不拿半份清单冒充成功。
  */
 class GitHubRepoClient(
@@ -264,6 +285,59 @@ class GitHubRepoClient(
             )
         }
         return GitHubCommitList(commits, bad, null)
+    }
+
+    /** 任意仓的 workflow runs（CI 深看第一层；解析与 CI 客户端共用一份，防双源坑）。 */
+    fun runs(repo: String, token: String?, limit: Int = 10): GitHubCiSnapshot {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubCiSnapshot(emptyList(), 0, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/actions/runs?per_page=${limit.coerceIn(1, 20)}", token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status != 200) return GitHubCiSnapshot(emptyList(), 0, httpIssue(result))
+        return parseWorkflowRuns(result.body, limit)
+    }
+
+    /** 一次 run 里的 jobs（CI 深看第二层）。 */
+    fun runJobs(repo: String, runId: Long, token: String?): GitHubJobList {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubJobList(emptyList(), 0, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/actions/runs/$runId/jobs?per_page=20", token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status == 404) return GitHubJobList(emptyList(), 0, "GitHub 说没这个 run（404）：可能已被清理")
+        if (result.status != 200) return GitHubJobList(emptyList(), 0, httpIssue(result))
+        val root = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject
+            ?: return GitHubJobList(emptyList(), 0, "GitHub 回的内容读不懂（200 但不是 jobs 账）")
+        val array = root["jobs"] as? JsonArray
+            ?: return GitHubJobList(emptyList(), 0, "GitHub 回的形状变了（没找到 jobs）")
+        val jobs = ArrayList<GitHubJob>()
+        var bad = 0
+        for (element in array) {
+            if (element !is JsonObject) { bad += 1; continue }
+            val id = (element["id"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+            val name = (element["name"] as? JsonPrimitive)?.contentOrNull
+            val status = (element["status"] as? JsonPrimitive)?.contentOrNull
+            if (id == null || name.isNullOrEmpty() || status.isNullOrEmpty()) { bad += 1; continue }
+            jobs += GitHubJob(
+                id = id,
+                name = name,
+                status = status,
+                conclusion = (element["conclusion"] as? JsonPrimitive)?.contentOrNull,
+                startedAt = (element["started_at"] as? JsonPrimitive)?.contentOrNull ?: "",
+            )
+        }
+        return GitHubJobList(jobs, bad, null)
+    }
+
+    /**
+     * 一段 job 日志（CI 深看第三层）：GitHub 302 到日志文本，GET 跟随重定向直接拿到。
+     * 有界读 512K 封顶——超长日志只给前一段并把 truncated 说出来，绝不整段吞内存。
+     */
+    fun jobLog(repo: String, jobId: Long, token: String?): GitHubJobLog {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubJobLog(null, 0, false, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/actions/jobs/$jobId/logs", token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status == 404) return GitHubJobLog(null, 0, false, "GitHub 说没这段日志（404）：run 太旧或日志已被清")
+        if (result.status != 200) return GitHubJobLog(null, 0, false, httpIssue(result))
+        if (result.body.isEmpty()) return GitHubJobLog(null, 0, false, "这段日志是空的（job 还没吐字或日志被清了）")
+        return GitHubJobLog(result.body, result.body.length, result.truncated, null)
     }
 
     /**

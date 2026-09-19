@@ -29,6 +29,36 @@ data class GitHubRelease(val tag: String, val name: String?, val publishedAt: St
 data class GitHubReleaseResult(val release: GitHubRelease?, val notFound: Boolean, val error: String?)
 
 /**
+ * workflow_runs 清单的**共用解析**（CI 客户端与仓库工作台客户端双端共一份，防双源坑）：
+ * 只取界面字段（id/name/head_sha/status/conclusion/created_at），读不动的条目计数不静默。
+ */
+internal fun parseWorkflowRuns(body: String, limit: Int): GitHubCiSnapshot {
+    val root = runCatching { Json { ignoreUnknownKeys = true }.parseToJsonElement(body) }.getOrNull() as? JsonObject
+        ?: return GitHubCiSnapshot(emptyList(), 0, "GitHub 回的内容读不懂（200 但不是 JSON）")
+    val array = root["workflow_runs"] as? JsonArray
+        ?: return GitHubCiSnapshot(emptyList(), 0, "GitHub 回的形状变了（没找到 workflow_runs）")
+    val runs = ArrayList<GitHubRun>()
+    var bad = 0
+    for (element in array) {
+        if (runs.size >= limit.coerceIn(1, 20)) break
+        if (element !is JsonObject) { bad += 1; continue }
+        val id = (element["id"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+        val sha = (element["head_sha"] as? JsonPrimitive)?.contentOrNull
+        val status = (element["status"] as? JsonPrimitive)?.contentOrNull
+        if (id == null || sha.isNullOrEmpty() || status.isNullOrEmpty()) { bad += 1; continue }
+        runs += GitHubRun(
+            id = id,
+            name = (element["name"] as? JsonPrimitive)?.contentOrNull ?: "",
+            headSha = sha,
+            status = status,
+            conclusion = (element["conclusion"] as? JsonPrimitive)?.contentOrNull,
+            createdAt = (element["created_at"] as? JsonPrimitive)?.contentOrNull ?: "",
+        )
+    }
+    return GitHubCiSnapshot(runs, bad, null)
+}
+
+/**
  * 仓库写法校验：要 owner/name 一刀两段。容忍粘进来整个 GitHub 链接（自动剥前缀），
  * 拒绝多段、空段、带空白/?/#与「..」的写法——防 URL 拼出意外路径。
  * 返回 null = 写法不对，调用方必须出声，不许拿半截 URL 去撞网络。
@@ -64,29 +94,7 @@ class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = 
             ?: return GitHubCiSnapshot(emptyList(), 0, "仓库写法不对：要 owner/name（现在是「$repo」）")
         val result = fetch("$GITHUB_API_ROOT/repos/$full/actions/runs?per_page=${limit.coerceIn(1, 20)}", token)
         if (result.status != 200) return GitHubCiSnapshot(emptyList(), 0, httpIssue(result))
-        val root = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject
-            ?: return GitHubCiSnapshot(emptyList(), 0, "GitHub 回的内容读不懂（200 但不是 JSON）")
-        val array = root["workflow_runs"] as? JsonArray
-            ?: return GitHubCiSnapshot(emptyList(), 0, "GitHub 回的形状变了（没找到 workflow_runs）")
-        val runs = ArrayList<GitHubRun>()
-        var bad = 0
-        for (element in array) {
-            if (runs.size >= limit.coerceIn(1, 20)) break
-            if (element !is JsonObject) { bad += 1; continue }
-            val id = (element["id"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
-            val sha = (element["head_sha"] as? JsonPrimitive)?.contentOrNull
-            val status = (element["status"] as? JsonPrimitive)?.contentOrNull
-            if (id == null || sha.isNullOrEmpty() || status.isNullOrEmpty()) { bad += 1; continue }
-            runs += GitHubRun(
-                id = id,
-                name = (element["name"] as? JsonPrimitive)?.contentOrNull ?: "",
-                headSha = sha,
-                status = status,
-                conclusion = (element["conclusion"] as? JsonPrimitive)?.contentOrNull,
-                createdAt = (element["created_at"] as? JsonPrimitive)?.contentOrNull ?: "",
-            )
-        }
-        return GitHubCiSnapshot(runs, bad, null)
+        return parseWorkflowRuns(result.body, limit)
     }
 
     /** 最新发布版：404 单独回 notFound（还没发布过），其余失败带状态码人话。 */

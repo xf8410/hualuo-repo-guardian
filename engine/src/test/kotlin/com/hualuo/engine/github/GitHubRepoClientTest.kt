@@ -9,8 +9,8 @@ import org.junit.Test
 
 /**
  * 仓库工作台客户端的纯 JVM 契约测试：清单解析、路径编码、读文件（JSON 档拿内容+sha、
- * 超限退 raw 档）、分支/提交历史、改码提交（sha 对账 + 409 冲突出声）。
- * fetch/putJson 全部注入，绝不碰真网。
+ * 超限退 raw 档）、分支/提交历史、改码提交（sha 对账 + 409 冲突出声）、CI 深看三层
+ * （runs / run 的 jobs / job 日志有界读）。fetch/putJson 全部注入，绝不碰真网。
  */
 class GitHubRepoClientTest {
 
@@ -365,5 +365,87 @@ class GitHubRepoClientTest {
 
         assertTrue(written.error!!.contains("文本"))
         assertEquals(0, put.urls.size)
+    }
+
+    // ── CI 深看三层 ────────────────────────────────────────────────────────
+
+    @Test
+    fun runsParsesWorkflowListForAnyRepo() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(
+            200,
+            "{\"workflow_runs\":[{\"id\":77,\"name\":\"自检\",\"head_sha\":\"abc1234def\"," +
+                "\"status\":\"completed\",\"conclusion\":\"success\",\"created_at\":\"2026-09-17T14:00:00Z\"}," +
+                "{\"broken\":1}]}",
+        )
+        val snapshot = client(fetch).runs("o/r", "tok")
+
+        assertNull(snapshot.error)
+        assertEquals(1, snapshot.badEntries)
+        assertEquals(1, snapshot.runs.size)
+        assertEquals(77L, snapshot.runs.first().id)
+        assertEquals("success", snapshot.runs.first().conclusion)
+        assertTrue(fetch.urls.first().contains("/repos/o/r/actions/runs?per_page="))
+    }
+
+    @Test
+    fun runsBadRepoShapeStaysOffline() {
+        val fetch = FakeFetch()
+        val snapshot = client(fetch).runs("bad", null)
+
+        assertTrue(snapshot.error!!.contains("owner/name"))
+        assertEquals(0, fetch.urls.size)
+    }
+
+    @Test
+    fun runJobsParsesIdNameStatusAndCountsBad() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(
+            200,
+            "{\"jobs\":[{\"id\":105,\"name\":\"编译 + 测试\",\"status\":\"completed\"," +
+                "\"conclusion\":\"failure\",\"started_at\":\"2026-09-17T14:52:03Z\"}," +
+                "{\"junk\":1}]}",
+        )
+        val list = client(fetch).runJobs("o/r", 77, "tok")
+
+        assertNull(list.error)
+        assertEquals(1, list.badEntries)
+        assertEquals(1, list.jobs.size)
+        assertEquals(105L, list.jobs.first().id)
+        assertEquals("failure", list.jobs.first().conclusion)
+        assertTrue(fetch.urls.first().contains("/repos/o/r/actions/runs/77/jobs?per_page=20"))
+    }
+
+    @Test
+    fun runJobs404SaysRunMayBeCleaned() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(404, "gone")
+        val list = client(fetch).runJobs("o/r", 77, null)
+
+        assertTrue(list.error!!.contains("404"))
+    }
+
+    @Test
+    fun jobLogReadsTextAndFlagsTruncation() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(200, "line1\nline2\nline3", truncated = true)
+        val log = client(fetch).jobLog("o/r", 105, "tok")
+
+        assertNull(log.error)
+        assertEquals("line1\nline2\nline3", log.text)
+        assertEquals(17, log.charCount)
+        assertTrue(log.truncated)
+        assertTrue(fetch.urls.first().contains("/repos/o/r/actions/jobs/105/logs"))
+    }
+
+    @Test
+    fun jobLogEmptyBodySaysSoInsteadOfFakeSuccess() {
+        val fetch = FakeFetch()
+        fetch.next = GitHubHttpResult(200, "")
+        val log = client(fetch).jobLog("o/r", 105, null)
+
+        assertNull(log.text)
+        assertNotNull(log.error)
+        assertTrue(log.error!!.contains("空"))
     }
 }

@@ -6,12 +6,15 @@ import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubBranch
 import com.hualuo.engine.github.GitHubCommitSummary
 import com.hualuo.engine.github.GitHubEntry
+import com.hualuo.engine.github.GitHubJob
 import com.hualuo.engine.github.GitHubRepoClient
 import com.hualuo.engine.github.GitHubRepoSummary
+import com.hualuo.engine.github.GitHubRun
 import com.hualuo.engine.github.normalizeGitHubRepo
 
 /**
- * 仓库工作台的状态舱（清单 / 浏览 / 分支切换 / 提交历史 / 文件预览与改码提交）。
+ * 仓库工作台的状态舱（清单 / 浏览 / 分支切换 / 提交历史 / 文件预览与改码提交 /
+ * CI 深看三层）。
  *
  * 为什么单独一个类：文件行数红线 999 行（run 35236425632 逮的）——这一块在 AppUiState
  * 里长到 1220 行的元凶。拆出来正好：它自成一个内聚的状态域，只依赖两样外界——
@@ -107,7 +110,7 @@ class RepoWorkbenchState(
     /** 「看别人的仓」输入框的词（不落盘：这是次导航动作，不是设置）。 */
     var otherRepoQuery by mutableStateOf("")
 
-    /** 进一个仓库，从根开始浏览（分支账本一并清干净：换仓不沾上一个仓的账）。 */
+    /** 进一个仓库，从根开始浏览（分支/CI 账本一并清干净：换仓不沾上一个仓的账）。 */
     fun browseInto(repo: String) {
         if (browseBusy) return
         val target = normalizeGitHubRepo(repo) ?: run {
@@ -115,6 +118,7 @@ class RepoWorkbenchState(
             return
         }
         closeFileView()
+        closeBrowseCi()
         browseRepo = target
         browseRef = null
         browsePath = ""
@@ -126,6 +130,8 @@ class RepoWorkbenchState(
         commitsOpen = false
         commits = emptyList()
         commitsNote = null
+        ciRunsList = emptyList()
+        ciRunsNote = null
         loadBrowse()
     }
 
@@ -150,6 +156,7 @@ class RepoWorkbenchState(
     fun exitBrowse() {
         if (browseBusy) return
         closeFileView()
+        closeBrowseCi()
         browseRepo = ""
         browseRef = null
         browsePath = ""
@@ -493,5 +500,176 @@ class RepoWorkbenchState(
         val path = fileViewPath
         if (path.isEmpty()) return
         openBrowseFile(GitHubEntry(path.substringAfterLast('/'), path, false, 0L))
+    }
+
+    // ── CI 深看（浏览仓的 runs、jobs、日志三层各说各话） ────────────────────
+
+    /** CI 卡开没有。 */
+    var browseCiOpen by mutableStateOf(false)
+        private set
+
+    /** runs 是否在拉。 */
+    var ciRunsBusy by mutableStateOf(false)
+        private set
+
+    /** 最近 workflow runs（真数据）。 */
+    var ciRunsList by mutableStateOf(emptyList<GitHubRun>())
+        private set
+
+    /** runs 的一句话收场。 */
+    var ciRunsNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 正在看 jobs 的 run id；null = 没展开。 */
+    var ciJobsRunId by mutableStateOf<Long?>(null)
+        private set
+
+    /** jobs 是否在拉。 */
+    var ciJobsBusy by mutableStateOf(false)
+        private set
+
+    /** 展开中 run 的 jobs（真数据）。 */
+    var ciJobsList by mutableStateOf(emptyList<GitHubJob>())
+        private set
+
+    /** jobs 的一句话收场。 */
+    var ciJobsNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 正在看日志的 job id；null = 没展开。 */
+    var ciLogJobId by mutableStateOf<Long?>(null)
+        private set
+
+    /** 日志是否在拉。 */
+    var ciLogBusy by mutableStateOf(false)
+        private set
+
+    /** job 日志（有界读；null = 没内容，理由在 note）。 */
+    var ciLogText by mutableStateOf<String?>(null)
+        private set
+
+    /** 日志的一句话收场（字符数/截断/失败理由）。 */
+    var ciLogNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 开/合 CI 卡；开的时候 runs 是空的就顺手拉一次。 */
+    fun toggleBrowseCi() {
+        if (browseCiOpen) {
+            closeBrowseCi()
+            return
+        }
+        browseCiOpen = true
+        if (ciRunsList.isEmpty() && !ciRunsBusy) loadBrowseCi()
+    }
+
+    /** 合上 CI 卡：三层全收（换仓/退出不留展开的旧账）。 */
+    fun closeBrowseCi() {
+        browseCiOpen = false
+        ciJobsRunId = null
+        ciJobsList = emptyList()
+        ciJobsNote = null
+        ciLogJobId = null
+        ciLogText = null
+        ciLogNote = null
+    }
+
+    private fun loadBrowseCi() {
+        val repo = browseRepo
+        if (repo.isEmpty()) return
+        ciRunsBusy = true
+        val token = githubToken()
+        Thread({
+            val result = runCatching { repoClient.runs(repo, token) }.getOrElse {
+                ciRunsBusy = false
+                ciRunsNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
+                return@Thread
+            }
+            ciRunsBusy = false
+            ciRunsList = result.runs
+            ciRunsNote = when {
+                result.error != null -> result.error
+                result.badEntries > 0 -> "有 ${result.badEntries} 条读不懂已跳过"
+                else -> null
+            }
+        }, "hualuo-ci-deep").start()
+    }
+
+    /** 手动刷新 runs（三层里下两层不合：只想刷新最外层账）。 */
+    fun refreshBrowseCi() {
+        if (!ciRunsBusy && browseRepo.isNotEmpty()) loadBrowseCi()
+    }
+
+    /**
+     * 展开一个 run 看 jobs。闸门在改账之前：没挂在浏览仓上就什么都不动——
+     * 先展开后撞闸会留一截悬空的展开层（run 35282696138 的测试抓的就是这个次序）。
+     */
+    fun openRunJobs(runId: Long) {
+        if (ciJobsBusy || ciLogBusy) return
+        val repo = browseRepo
+        if (repo.isEmpty()) return
+        ciJobsRunId = runId
+        ciJobsList = emptyList()
+        ciJobsNote = null
+        ciJobsBusy = true
+        val token = githubToken()
+        Thread({
+            val result = runCatching { repoClient.runJobs(repo, runId, token) }.getOrElse {
+                ciJobsBusy = false
+                ciJobsNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
+                return@Thread
+            }
+            ciJobsBusy = false
+            ciJobsList = result.jobs
+            ciJobsNote = when {
+                result.error != null -> result.error
+                result.badEntries > 0 -> "有 ${result.badEntries} 条读不懂已跳过"
+                else -> null
+            }
+        }, "hualuo-ci-jobs").start()
+    }
+
+    /** 收起 jobs 层（日志层一并收：父层合了子层无处挂）。 */
+    fun closeRunJobs() {
+        if (ciJobsBusy || ciLogBusy) return
+        ciJobsRunId = null
+        ciJobsList = emptyList()
+        ciJobsNote = null
+        ciLogJobId = null
+        ciLogText = null
+        ciLogNote = null
+    }
+
+    /** 展开一个 job 看日志（闸门在改账之前，同 openRunJobs；有界读：超长给前一段并明说）。 */
+    fun openJobLog(jobId: Long) {
+        if (ciLogBusy) return
+        val repo = browseRepo
+        if (repo.isEmpty()) return
+        ciLogJobId = jobId
+        ciLogText = null
+        ciLogNote = null
+        ciLogBusy = true
+        val token = githubToken()
+        Thread({
+            val result = runCatching { repoClient.jobLog(repo, jobId, token) }.getOrElse {
+                ciLogBusy = false
+                ciLogNote = "拉不动 GitHub（${it.message ?: "出错了"}）"
+                return@Thread
+            }
+            ciLogBusy = false
+            ciLogText = result.text
+            ciLogNote = when {
+                result.error != null -> result.error
+                result.truncated -> "只读了前 ${result.charCount} 字符（日志太长，有界读封顶；全量去 CI 产物里拿）"
+                else -> "${result.charCount} 字符"
+            }
+        }, "hualuo-ci-log").start()
+    }
+
+    /** 收起日志层。 */
+    fun closeJobLog() {
+        if (ciLogBusy) return
+        ciLogJobId = null
+        ciLogText = null
+        ciLogNote = null
     }
 }

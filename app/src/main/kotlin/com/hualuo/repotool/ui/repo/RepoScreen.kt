@@ -42,11 +42,7 @@ import com.hualuo.repotool.ui.theme.WarnAmber
  * 仓库CI页（v13 #p-repo）：**真数据**——GitHub Actions 最近几条 run + 检查更新，
  * 外加仓库工作台（状态舱 state.repo）：自己的仓清单（要令牌）、别人的公开仓、
  * contents 逐级浏览、分支切换、提交历史（维护记录）、文件原文预览、**改码提交**
- * （sha 对账、冲突出声不硬盖）。
- *
- * 数据通道：进页拉一次（已有数据不重复拉），「刷新」行手动重拉；
- * 失败（403 提示去填令牌 / 404 提示核仓库名 / 连不上）与坏条目都摆在明面上，
- * 不拿演示卡冒充 CI 状态——那正是旧版「演示卡撒谎」的同款病。
+ * （sha 对账、冲突出声不硬盖）、**CI 深看三层**（runs、jobs、日志，不跳网页）。
  */
 @Composable
 fun RepoScreen(state: AppUiState) {
@@ -179,7 +175,7 @@ fun RepoScreen(state: AppUiState) {
             }
         }
 
-        // 浏览卡：进了仓库才出现；分支切换 + 目录树 + 提交历史（维护记录）
+        // 浏览卡：进了仓库才出现；分支切换 + 目录树 + 提交历史 + CI 深看
         if (state.repo.browseRepo.isNotEmpty()) {
             HCard {
                 CardTitle(
@@ -300,6 +296,134 @@ fun RepoScreen(state: AppUiState) {
                         }
                     }
                     LRow("刷新历史", chevron = true) { state.repo.refreshCommits() }
+                }
+                // CI 深看三层：runs、点 run 看 jobs、点 job 看日志；不跳网页
+                LRow(
+                    "查看 CI",
+                    if (state.repo.browseCiOpen) {
+                        "收起"
+                    } else if (state.repo.ciRunsList.isNotEmpty()) {
+                        "${state.repo.ciRunsList.size} 条"
+                    } else {
+                        null
+                    },
+                    chevron = true,
+                ) { state.repo.toggleBrowseCi() }
+                if (state.repo.browseCiOpen) {
+                    when {
+                        state.repo.ciRunsBusy -> Text(
+                            "正在拉 CI 记录…",
+                            fontSize = 12.5.sp,
+                            color = SubInk,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        state.repo.ciRunsList.isEmpty() && state.repo.ciRunsNote != null -> Text(
+                            state.repo.ciRunsNote ?: "",
+                            fontSize = 12.sp,
+                            color = WarnAmber,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        state.repo.ciRunsList.isEmpty() -> Text(
+                            "还没有 workflow 记录",
+                            fontSize = 12.sp,
+                            color = SubInk,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                        else -> state.repo.ciRunsList.forEach { run ->
+                            val dot = when (run.conclusion) {
+                                "success" -> Tone.Ok
+                                "failure", "timed_out", "cancelled" -> Tone.Err
+                                else -> Tone.Warn
+                            }
+                            LRow(
+                                "run ${run.id}",
+                                "${run.conclusion ?: run.status} · ${run.headSha.take(7)}",
+                                dot = dot,
+                                chevron = true,
+                            ) { state.repo.openRunJobs(run.id) }
+                        }
+                    }
+                    state.repo.ciRunsNote?.let { note ->
+                        if (state.repo.ciRunsList.isNotEmpty()) {
+                            Text(note, fontSize = 11.sp, color = WarnAmber, modifier = Modifier.padding(vertical = 2.dp))
+                        }
+                    }
+                    LRow("刷新 CI", chevron = true) { state.repo.refreshBrowseCi() }
+                    if (state.repo.ciJobsRunId != null) {
+                        Text(
+                            "run " + state.repo.ciJobsRunId + " 的 jobs：",
+                            fontSize = 12.sp,
+                            color = SubInk,
+                            modifier = Modifier.padding(vertical = 4.dp),
+                        )
+                        when {
+                            state.repo.ciJobsBusy -> Text(
+                                "正在拉 jobs…",
+                                fontSize = 12.5.sp,
+                                color = SubInk,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                            )
+                            state.repo.ciJobsList.isEmpty() && state.repo.ciJobsNote != null -> Text(
+                                state.repo.ciJobsNote ?: "",
+                                fontSize = 12.sp,
+                                color = WarnAmber,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                            )
+                            else -> state.repo.ciJobsList.forEach { job ->
+                                val dot = when (job.conclusion) {
+                                    "success" -> Tone.Ok
+                                    "failure", "timed_out", "cancelled" -> Tone.Err
+                                    else -> Tone.Warn
+                                }
+                                LRow(job.name, job.conclusion ?: job.status, dot = dot, chevron = true) {
+                                    state.repo.openJobLog(job.id)
+                                }
+                            }
+                        }
+                        state.repo.ciJobsNote?.let { note ->
+                            if (state.repo.ciJobsList.isNotEmpty()) {
+                                Text(note, fontSize = 11.sp, color = WarnAmber, modifier = Modifier.padding(vertical = 2.dp))
+                            }
+                        }
+                        if (state.repo.ciLogJobId != null) {
+                            Text(
+                                "job " + state.repo.ciLogJobId + " 的日志：",
+                                fontSize = 12.sp,
+                                color = SubInk,
+                                modifier = Modifier.padding(vertical = 4.dp),
+                            )
+                            when {
+                                state.repo.ciLogBusy -> Text(
+                                    "正在拉日志…",
+                                    fontSize = 12.5.sp,
+                                    color = SubInk,
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                )
+                                state.repo.ciLogText == null -> Text(
+                                    state.repo.ciLogNote ?: "没有日志",
+                                    fontSize = 12.sp,
+                                    color = WarnAmber,
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                )
+                                else -> {
+                                    state.repo.ciLogNote?.let { note ->
+                                        Text(note, fontSize = 11.sp, color = SubInk, modifier = Modifier.padding(bottom = 4.dp))
+                                    }
+                                    Text(
+                                        state.repo.ciLogText ?: "",
+                                        fontSize = 10.5.sp,
+                                        color = Ink,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                    )
+                                }
+                            }
+                            LRow("收起日志", chevron = true) { state.repo.closeJobLog() }
+                        }
+                        LRow("收起 jobs", chevron = true) { state.repo.closeRunJobs() }
+                    }
                 }
                 LRow("退出浏览", chevron = true) { state.repo.exitBrowse() }
             }
