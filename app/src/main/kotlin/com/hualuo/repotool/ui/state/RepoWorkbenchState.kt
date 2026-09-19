@@ -4,16 +4,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.engine.github.GitHubBranch
+import com.hualuo.engine.github.GitHubCodeHit
 import com.hualuo.engine.github.GitHubCommitSummary
 import com.hualuo.engine.github.GitHubEntry
 import com.hualuo.engine.github.GitHubJob
 import com.hualuo.engine.github.GitHubRepoClient
 import com.hualuo.engine.github.GitHubRepoSummary
 import com.hualuo.engine.github.GitHubRun
+import com.hualuo.engine.github.GitHubSearchClient
 import com.hualuo.engine.github.normalizeGitHubRepo
 
 /**
- * 仓库工作台的状态舱（清单 / 浏览 / 分支切换 / 提交历史 / 文件预览与改码提交 /
+ * 仓库工作台的状态舱（清单 / 浏览 / 仓库内搜索 / 分支切换 / 提交历史 / 文件预览与改码提交 /
  * CI 深看三层）。
  *
  * 为什么单独一个类：文件行数红线 999 行（run 35236425632 逮的）——这一块在 AppUiState
@@ -23,6 +25,7 @@ import com.hualuo.engine.github.normalizeGitHubRepo
  *
  * 家规不变：失败出声不冒充（成功/失败都写 note，绝不静默）；后台线程自己起（大会计 IO
  * 不进主线程）；令牌只进请求头；改码靠 sha 对账，409 冲突原话出声让人重开重改，草稿不丢。
+ * 搜索的四道闸用 [repoSearchGate] 的**同一来源判词**（双源话会在两处漂移，防双源）。
  */
 class RepoWorkbenchState(
     private val loadToken: () -> String?,
@@ -30,6 +33,7 @@ class RepoWorkbenchState(
 ) {
 
     private val repoClient = GitHubRepoClient()
+    private val searchClient = GitHubSearchClient()
 
     private fun githubToken(): String? = loadToken()
 
@@ -110,7 +114,7 @@ class RepoWorkbenchState(
     /** 「看别人的仓」输入框的词（不落盘：这是次导航动作，不是设置）。 */
     var otherRepoQuery by mutableStateOf("")
 
-    /** 进一个仓库，从根开始浏览（分支/CI 账本一并清干净：换仓不沾上一个仓的账）。 */
+    /** 进一个仓库，从根开始浏览（分支/CI/搜索账本一并清干净：换仓不沾上一个仓的账）。 */
     fun browseInto(repo: String) {
         if (browseBusy) return
         val target = normalizeGitHubRepo(repo) ?: run {
@@ -119,6 +123,7 @@ class RepoWorkbenchState(
         }
         closeFileView()
         closeBrowseCi()
+        resetSearchResults()
         browseRepo = target
         browseRef = null
         browsePath = ""
@@ -157,6 +162,7 @@ class RepoWorkbenchState(
         if (browseBusy) return
         closeFileView()
         closeBrowseCi()
+        resetSearchResults()
         browseRepo = ""
         browseRef = null
         browsePath = ""
@@ -193,6 +199,103 @@ class RepoWorkbenchState(
                 else -> null
             }
         }, "hualuo-browse").start()
+    }
+
+    // ── 仓库内搜索（GitHub 代码索引；令牌必带，只覆盖默认分支） ─────────────
+
+    /** 搜索词（次导航动作，不落盘）。 */
+    var searchQuery by mutableStateOf("")
+
+    /** 搜索是否在跑。 */
+    var searchBusy by mutableStateOf(false)
+        private set
+
+    /** 命中清单（真数据；失败必为空，不拿旧结果顶数）。 */
+    var searchHits by mutableStateOf(emptyList<GitHubCodeHit>())
+        private set
+
+    /** GitHub 报的总命中数（可能大于本页）。 */
+    var searchTotal by mutableStateOf(0)
+        private set
+
+    /** GitHub 自标「结果可能不全」时带上，界面如实说。 */
+    var searchIncomplete by mutableStateOf(false)
+        private set
+
+    /** 搜索的一句话收场；null = 还没搜过。 */
+    var searchNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 搜索代际：换仓/换分支/重搜都会加一，旧线程的迟到结果不许再写账（防挂错仓）。 */
+    private var searchSeq = 0
+
+    /**
+     * 搜当前浏览仓的代码。四道闸（没在浏览、非默认分支、空词、没令牌）走
+     * [repoSearchGate] 同一来源判词，全在发网之前；失败清场不拿旧结果顶数。
+     */
+    fun runSearch() {
+        if (searchBusy) return
+        val gate = repoSearchGate(browsing = browseRepo, ref = browseRef, query = searchQuery, token = githubToken())
+        if (gate != null) {
+            searchNote = gate
+            return
+        }
+        val repo = browseRepo
+        val token = githubToken()
+        if (repo.isEmpty() || token.isNullOrEmpty()) {
+            // 不可达（闸全过 = 两样都在手）；真到这儿当内部次序问题出声，不静默
+            searchNote = "搜索的状态对不上（内部次序问题）：退出来重进再试"
+            return
+        }
+        searchBusy = true
+        searchNote = null
+        val seq = ++searchSeq
+        Thread({
+            val result = runCatching { searchClient.searchCode(repo, searchQuery.trim(), token) }.getOrElse {
+                if (seq == searchSeq) {
+                    searchBusy = false
+                    searchNote = "搜索没发出去（${it.message ?: "出错"}）"
+                }
+                return@Thread
+            }
+            if (seq != searchSeq) return@Thread // 换过仓/重搜过：这轮账作废
+            searchBusy = false
+            searchHits = result.hits
+            searchTotal = if (result.error != null) 0 else result.totalCount
+            searchIncomplete = result.incomplete
+            searchNote = when {
+                result.error != null -> result.error
+                result.hits.isEmpty() -> "没搜到命中：换个更短的关键词再试"
+                else -> buildString {
+                    append("命中 ${result.hits.size} 条")
+                    if (result.totalCount > result.hits.size) {
+                        append("（总 ${result.totalCount}，只列前 ${result.hits.size} 条）")
+                    }
+                    if (result.incomplete) append("；GitHub 说结果可能不全")
+                    if (result.badEntries > 0) append("；另有 ${result.badEntries} 条读不懂已跳过")
+                }
+            }
+        }, "hualuo-repo-search").start()
+    }
+
+    /** 点命中：打开文件预览（搜索只覆盖默认分支，这里也只在默认分支放行）。 */
+    fun openSearchHit(hit: GitHubCodeHit) {
+        if (searchBusy || fileViewBusy || browseBusy) return
+        if (browseRef != null) {
+            toast("搜索只覆盖默认分支：切回默认分支再点开")
+            return
+        }
+        openBrowseFile(GitHubEntry(hit.name, hit.path, false, 0L))
+    }
+
+    /** 换仓/换分支/退出浏览时把搜索结果收干净（旧仓的命中挂在界面上是骗人的）。 */
+    private fun resetSearchResults() {
+        searchSeq += 1
+        searchBusy = false
+        searchHits = emptyList()
+        searchTotal = 0
+        searchIncomplete = false
+        searchNote = null
     }
 
     // ── 分支切换（浏览必配：切分支 = 换一棵树，路径回根重新走） ─────────────
@@ -252,6 +355,7 @@ class RepoWorkbenchState(
         if (browseBusy || browseRepo.isEmpty()) return
         branchPickerOpen = false
         closeFileView()
+        resetSearchResults()
         if (browseRef == name) return
         browseRef = name
         browsePath = ""
@@ -351,6 +455,14 @@ class RepoWorkbenchState(
         if (browseBusy || fileViewBusy || entry.isDir) return
         val repo = browseRepo
         if (repo.isEmpty()) return
+        // 换文件必收编辑草稿：草稿绑在上一份内容上，挂着提交会把 A 的稿子写进 B（手滑隐患，堵死）
+        if (editingOpen) {
+            toast("换文件：上一份没提交的编辑草稿收掉了")
+        }
+        editingOpen = false
+        editingText = ""
+        editingMessage = ""
+        editNote = null
         fileViewBusy = true
         fileViewPath = entry.path
         fileViewText = null

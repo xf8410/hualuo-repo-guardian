@@ -41,8 +41,9 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 /**
  * 仓库CI页（v13 #p-repo）：**真数据**——GitHub Actions 最近几条 run + 检查更新，
  * 外加仓库工作台（状态舱 state.repo）：自己的仓清单（要令牌）、别人的公开仓、
- * contents 逐级浏览、分支切换、提交历史（维护记录）、文件原文预览、**改码提交**
- * （sha 对账、冲突出声不硬盖）、**CI 深看三层**（runs、jobs、日志，不跳网页）。
+ * contents 逐级浏览、**仓库内搜索**（GitHub 代码索引，令牌必带，只覆盖默认分支）、
+ * 分支切换、提交历史（维护记录）、文件原文预览、**改码提交**（sha 对账、冲突出声
+ * 不硬盖）、**CI 深看三层**（runs、jobs、日志，不跳网页）。
  */
 @Composable
 fun RepoScreen(state: AppUiState) {
@@ -175,7 +176,7 @@ fun RepoScreen(state: AppUiState) {
             }
         }
 
-        // 浏览卡：进了仓库才出现；分支切换 + 目录树 + 提交历史 + CI 深看
+        // 浏览卡：进了仓库才出现；分支切换 + 目录树 + 代码搜索 + 提交历史 + CI 深看
         if (state.repo.browseRepo.isNotEmpty()) {
             HCard {
                 CardTitle(
@@ -255,6 +256,53 @@ fun RepoScreen(state: AppUiState) {
                 }
                 if (state.repo.browseTrail.isNotEmpty()) {
                     LRow("返回上一级", chevron = true) { state.repo.browseUp() }
+                }
+                // 仓库内搜索（GitHub 代码索引：令牌必带，只覆盖默认分支，界面如实说）
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Bg)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ) {
+                        if (state.repo.searchQuery.isEmpty()) {
+                            Text("搜代码：类名、函数名、报错原文", fontSize = 13.sp, color = SubInk)
+                        }
+                        BasicTextField(
+                            value = state.repo.searchQuery,
+                            onValueChange = { state.repo.searchQuery = it },
+                            textStyle = TextStyle(fontSize = 13.sp, color = Ink),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (state.repo.searchBusy) Bg else Accent)
+                            .clickable(enabled = !state.repo.searchBusy) { state.repo.runSearch() }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        Text(
+                            if (state.repo.searchBusy) "搜索中…" else "搜代码",
+                            fontSize = 13.sp,
+                            color = if (state.repo.searchBusy) SubInk else Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                state.repo.searchNote?.let { note ->
+                    Text(
+                        note,
+                        fontSize = 11.5.sp,
+                        color = if (state.repo.searchHits.isEmpty()) WarnAmber else SubInk,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                state.repo.searchHits.forEach { hit ->
+                    LRow(hit.name, hit.path, chevron = true) { state.repo.openSearchHit(hit) }
                 }
                 // 提交历史（维护记录）：当前分支最近干了什么，新在前
                 LRow(
