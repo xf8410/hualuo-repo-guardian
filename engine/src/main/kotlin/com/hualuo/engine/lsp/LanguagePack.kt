@@ -13,11 +13,18 @@ import com.hualuo.engine.io.sanitizeForLog
  *
  * 字段纪律（构造时硬验，违规抛 IllegalArgumentException，不带病进流程）：
  *  - id / version：ASCII 小写词符（a-z 0-9 点 下划线 减号），长 1 到 64——它们直接进路径；
- *  - serverBinary：ASCII 词符文件名（允许点号与减号），不许含双点——登记与查找都认它；
+ *  - serverBinary：包内相对路径（真实发行版多是 bin/ 这种嵌套结构）。若干 ASCII 词符段用
+ *    正斜杠分隔，每段字母数字开头；不许双点、空段、反斜杠、绝对路径与含控制字符。
+ *    解包完成后点名验的就是它（PackExtractor.verifyEntry）；
  *  - sha256Hex：64 位小写十六进制，大写视为不匹配（宁严勿宽）；
  *  - downloadUrl：只认 http 与 https，且不许含控制字符；
  *  - 任何字段都不许含控制字符（换行能伪造日志行）；报错消息里的原样值一律先脱敏再拼
  *    （控制字符换成点、超长截断），不把字符本体原样印出去。
+ *
+ * 契约修订（相对第一版）：serverBinary 从「纯文件名」放宽为「干净的包内相对路径」。
+ * 理由：真实语言服务发行版（kotlin/rust/go 等）几乎都把可执行文件放在 bin/ 子目录，
+ * 纯文件名会逼包生产方拍平目录、破坏服务自己的相对引用。防穿越的强度不降反升：
+ * 改成逐段验，双点、空段、绝对路径、反斜杠全部硬拒（测试逐条钉死）。
  */
 data class LanguagePack(
     val id: String,
@@ -30,8 +37,9 @@ data class LanguagePack(
     init {
         require(isSlug(id)) { "语言包 id 必须是 ASCII 小写词符（长 1 到 64），现在是：" + sanitizeForLog(id) }
         require(isSlug(version)) { "版本号必须是 ASCII 小写词符，现在是：" + sanitizeForLog(version) }
-        require(isFileName(serverBinary)) {
-            "服务入口文件名必须是 ASCII 词符（允许点号与减号、不许含双点），现在是：" + sanitizeForLog(serverBinary)
+        require(isPackPath(serverBinary)) {
+            "服务入口必须是包内相对路径（ASCII 段用正斜杠分隔，不许双点、空段、反斜杠、绝对路径），现在是：" +
+                sanitizeForLog(serverBinary)
         }
         require(isSha256(sha256Hex)) { "sha256 必须是 64 位小写十六进制（实际长度 ${sha256Hex.length}）" }
         require(isHttpOrHttps(downloadUrl)) { "下载地址只认 http 与 https（现在是：" + sanitizeForLog(downloadUrl) + "）" }
@@ -48,9 +56,17 @@ internal fun Char.hasControl(): Boolean = code < 0x20 || code == 0x7F
 /** ASCII 小写词符：首字符是字母或数字，其后允许点、下划线、减号，总长 1 到 64。 */
 internal fun isSlug(value: String): Boolean = SLUG.matches(value)
 
-/** 文件名形状：首字符字母或数字，其后允许点、下划线、减号，总长 1 到 128，且不含双点。 */
-internal fun isFileName(value: String): Boolean =
-    FILE_NAME.matches(value) && !value.contains("..")
+/**
+ * 包内相对路径：若干 ASCII 词符段用正斜杠分隔。
+ * 总长 1 到 256；不许绝对路径（正斜杠开头）与反斜杠（Windows 解包工具会把它当分隔符）；
+ * 每段不许为空、不许含双点（所以点段、双点段、a..b 这类段都过不了）、不许控制字符。
+ */
+internal fun isPackPath(value: String): Boolean {
+    if (value.isEmpty() || value.length > 256) return false
+    if (value.startsWith("/") || value.contains('\\')) return false
+    val parts = value.split('/')
+    return parts.all { it.isNotEmpty() && SEGMENT.matches(it) && !it.contains("..") }
+}
 
 /** 64 位小写十六进制。大写、短一位、多一位都算不匹配。 */
 internal fun isSha256(value: String): Boolean =
@@ -60,4 +76,6 @@ internal fun isHttpOrHttps(value: String): Boolean =
     value.startsWith("https://") || value.startsWith("http://")
 
 private val SLUG = Regex("^[a-z0-9][a-z0-9._-]{0,63}$")
-private val FILE_NAME = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+/** 段规则与文件名同源：首字符字母数字，其后允许点、下划线、减号，总长不超过 128。 */
+private val SEGMENT = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

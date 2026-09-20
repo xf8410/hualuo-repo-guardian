@@ -10,6 +10,9 @@ import org.junit.Test
  *
  * 为什么验证放在构造时而不是安装时：坏定义越早拒越好。
  * 等包下载完几百 MB 再说「名字里不该有双点」，是把带宽和信任一起浪费掉。
+ *
+ * 契约修订（相对第一版）：serverBinary 从「纯文件名」放宽为「干净的包内相对路径」
+ * （bin/server.sh 这类真实发行结构要过，双点/空段/绝对路径/反斜杠继续全拒）。
  */
 class LanguagePackTest {
 
@@ -33,6 +36,8 @@ class LanguagePackTest {
     fun validEdgeShapesPass() {
         valid().copy(id = "a", version = "0", serverBinary = "s.sh", displayName = "x")
         valid().copy(id = "x".repeat(64))
+        valid().copy(serverBinary = "bin/kotlin-language-server")
+        valid().copy(serverBinary = "a/b/c/d.sh")
     }
 
     @Test
@@ -51,11 +56,15 @@ class LanguagePackTest {
     }
 
     @Test
-    fun serverBinaryRejectsTraversalAndSeparators() {
-        assertRejected("双点遍历不许") { valid().copy(serverBinary = "..\\evil") }
-        assertRejected("正斜杠不许") { valid().copy(serverBinary = "bin/server") }
+    fun entryPathRejectsTraversalAndOddShapes() {
+        assertRejected("双点段不许") { valid().copy(serverBinary = "..\\evil") }
+        assertRejected("双点藏在段里不许") { valid().copy(serverBinary = "bin/..") }
+        assertRejected("双点夹在词里不许") { valid().copy(serverBinary = "a..b") }
         assertRejected("反斜杠不许") { valid().copy(serverBinary = "bin\\server") }
-        assertRejected("空文件名不许") { valid().copy(serverBinary = "") }
+        assertRejected("绝对路径不许") { valid().copy(serverBinary = "/bin/server") }
+        assertRejected("空段不许") { valid().copy(serverBinary = "bin//server") }
+        assertRejected("空路径不许") { valid().copy(serverBinary = "") }
+        assertRejected("段首必须是字母数字") { valid().copy(serverBinary = "bin/-dash") }
     }
 
     @Test
