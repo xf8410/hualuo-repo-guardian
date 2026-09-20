@@ -49,6 +49,7 @@ import com.hualuo.repotool.ui.chat.ChatScreen
 import com.hualuo.repotool.ui.chat.Composer
 import com.hualuo.repotool.ui.chat.SheetsLayer
 import com.hualuo.repotool.ui.components.ConfirmDialog
+import com.hualuo.repotool.ui.components.WriteConfirmCard
 import com.hualuo.repotool.ui.data.DemoCtx
 import com.hualuo.repotool.ui.drawer.DrawerOverlay
 import com.hualuo.repotool.ui.model.NavTab
@@ -114,6 +115,9 @@ private val BusyBarAlpha = 0.55f
  * kernel.backupProgress / kernel.courierProgress（进程级）画在顶栏下面，收尾必须写 null
  * 收行；结果走状态层活通道应用并出声，各管一段（主线程做大会计 IO 是 ANR/闪退病根，
  * 0.5.0 根治；黑盒等待是 0.6.0 根治）。
+ *
+ * 写仓库确认卡（0.7.0 刀③）画在**最上层**：写仓库是全 App 最重的一个动作，
+ * 不许被设置层/弹层盖住——模型提议改码时它必须第一个被看见，点头才写。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -357,6 +361,10 @@ fun HualuoApp(versionLabel: String) {
             SheetsLayer(state)
             ConfirmDialog(state)
             ToastBubble(state)
+
+            // 写仓库确认卡（0.7.0 刀③）压在最上层：写仓库是全 App 最重的动作，
+            // 不许被设置层/弹层盖住——模型提议改码时它必须第一个被看见，点头才写。
+            WriteConfirmCard(kernel.writeGate)
         }
     }
 }

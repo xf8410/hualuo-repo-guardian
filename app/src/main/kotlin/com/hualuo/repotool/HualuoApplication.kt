@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.state.UiPersistenceBundle
+import com.hualuo.repotool.ui.state.WriteConfirmGate
 import com.hualuo.repotool.ui.state.createUiPersistence
 
 /**
@@ -40,8 +41,15 @@ class HualuoApplication : Application() {
     /** 设置出口 + 会话仓 + 启动通知（读不懂才非空）。全进程一份。 */
     val uiBundle: UiPersistenceBundle by lazy { createUiPersistence(this) }
 
+    /**
+     * 写类工具的确认闸门（0.7.0 刀③）：模型提议改仓库时摆确认卡，用户点头才写。
+     * 挂进程不挂界面——确认卡渲染期间 Activity 重建（转屏/切出）不丢；
+     * 与 uiState 同源注入（ToolWiring 只有拿到它才注册写工具，默认拒写）。
+     */
+    val writeGate = WriteConfirmGate()
+
     /** 全部界面状态。全进程一份；Activity 重建只是重新接上它。 */
-    val uiState: AppUiState by lazy { AppUiState(uiBundle.persistence, uiBundle.store) }
+    val uiState: AppUiState by lazy { AppUiState(uiBundle.persistence, uiBundle.store, writeGate) }
 
     private val startupNotice = OnceNotice { uiBundle.notice }
 
