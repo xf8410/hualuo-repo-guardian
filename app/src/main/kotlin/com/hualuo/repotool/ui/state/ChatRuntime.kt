@@ -3,7 +3,9 @@ package com.hualuo.repotool.ui.state
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.hualuo.engine.api.ChatOutcome
 import com.hualuo.engine.api.ChatTurn
+import com.hualuo.engine.api.GenerationError
 import com.hualuo.engine.api.OpenAiCompatClient
 import com.hualuo.engine.api.ProviderProfile
 import com.hualuo.engine.api.UrlConnTransport
@@ -13,10 +15,13 @@ import com.hualuo.engine.generation.IdleWatchdog
 import com.hualuo.engine.http.RetryPolicy
 import com.hualuo.engine.store.SessionStore
 import com.hualuo.engine.store.StoredMsg
+import com.hualuo.engine.toolcalls.AssembledToolCall
+import com.hualuo.engine.toolcalls.ToolRegistry
+import com.hualuo.engine.toolcalls.ToolTurnBuilder
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
-import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Badge
 import com.hualuo.repotool.ui.model.ChatMsg
+import com.hualuo.repotool.ui.model.IconKey
 import com.hualuo.repotool.ui.model.Tone
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -42,6 +47,12 @@ import java.util.Locale
  * **砍了几条记进 [lastTrimmed]**，界面必须出声；系统指令作为 system 消息排最前，
  * 不占历史条数，空指令就一个字都不多发。
  *
+ * **工具回合（0.7.0 协议刀）**：注入了 [toolRegistry]（非空）时，请求带上 tools 清单；
+ * 模型回工具调用就执行、把结果回填历史、再发下一轮——轮次有上限（[maxToolRounds]），
+ * 打到上限按 ToolLoopLimit 收场（出路是「拆小问题」不是重试）。每一轮的工具动作在
+ * 当前卡上以 toolLine 回显（每步出声），轮与轮之间**停止键照样管用**（stopRequested
+ * 在两轮检查点收线）。注册表为空时走老路（不带 tools 字段），行为与接线前逐字一致。
+ *
  * 家规对齐：
  *  - 「生成中」只是徽标文字，不是转圈图形；错误卡走系统红样式，text 就是
  *    GenerationError.userMessage()——出路写在脸上，不弹窗、不静默。
@@ -49,7 +60,7 @@ import java.util.Locale
  *    不许牵连上一条已完成的。
  *  - [worker] 注入点让 JVM 测试能同步跑完一整条链（单测不 sleep 等线程）。
  *
- * 参数写法钉两条 Kotlin 规矩（都是 CI 抓过的）：
+ * 参数写法钉几条 Kotlin 规矩（都是 CI 抓过的）：
  *  - 尾随 lambda 永远绑**最后一个**参数——本类最后一个是 clock，
  *    调用方传开关必须具名 `autoRetryCostly = {...}`，不许偷懒尾随；
  *  - **跨模块的 public 属性判空后不智能转换**（:engine 的 ModelListing.error 在 :app
@@ -72,6 +83,10 @@ class ChatRuntime(
     val maxHistoryTurns: () -> Int = { MAX_HISTORY_TURNS },
     /** 系统指令；空串就不发这条（不多塞一个空消息占位）。 */
     val systemPrompt: () -> String = { "" },
+    /** 模型可调用的工具表；空表 = 不带 tools 字段（行为与接线前逐字一致）。 */
+    private val toolRegistry: ToolRegistry = ToolRegistry(),
+    /** 工具回合的轮次上限（防模型连轴转地调工具不给答案）。 */
+    private val maxToolRounds: Int = MAX_TOOL_ROUNDS,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
@@ -112,6 +127,12 @@ class ChatRuntime(
     /** 只在跑的时候有值：停止键按这个槽掐连接，收场后清空。 */
     @Volatile private var activeSlot: GenerationSlot? = null
 
+    /**
+     * 停止旗：跨「轮与轮之间」的检查点收线——工具在跑、模型在等下一轮时按停止，
+     * 也要停得住（只掐 activeSlot 管不到两轮之间的缝隙）。
+     */
+    @Volatile private var stopRequested = false
+
     /** 发一条：先把「用户气泡 + 生成中的空助手卡」摆上屏，再开线程真发。 */
     fun send(prompt: String, model: String) {
         val text = prompt.trim()
@@ -123,6 +144,7 @@ class ChatRuntime(
         synchronized(lock) {
             if (busy) return
             busy = true
+            stopRequested = false
             messages = messages +
                 ChatMsg(who = emptyList(), time = now(), text = text, fromMe = true) +
                 ChatMsg(
@@ -138,8 +160,9 @@ class ChatRuntime(
         worker(Thread(body).apply { name = "hualuo-chat" })
     }
 
-    /** 停止：掐进行中的那一条（幂等，没在跑就是空操作）。 */
+    /** 停止：掐进行中的那一条（幂等，没在跑就是空操作）；轮间的检查点靠 stopRequested 收线。 */
     fun stop() {
+        stopRequested = true
         activeSlot?.stop()
     }
 
@@ -219,37 +242,112 @@ class ChatRuntime(
         worker(Thread(body).apply { name = "hualuo-models" })
     }
 
-    private fun runGeneration(profile: ProviderProfile, history: List<ChatTurn>) {
+    /**
+     * 生成主链（含工具回合）：发一轮、收一轮；模型要调工具就执行、回填、再发下一轮。
+     *
+     * 每条消息自己的 transport 与槽（与老版一致）：停止键掐的是当前这一轮。
+     * 轮与轮之间的检查点（每轮开头、每个工具执行前）看 [stopRequested]——
+     * 按过停止就不再发下一轮。轮次打到上限按 ToolLoopLimit 收场，不许无限打转。
+     */
+    private fun runGeneration(profile: ProviderProfile, historyInit: List<ChatTurn>) {
+        var history = historyInit
+        var rounds = 0
+        while (true) {
+            if (stopRequested) {
+                settleCancelled()
+                return
+            }
+            when (val round = runOneRound(profile, history)) {
+                is RoundOutcome.Text -> {
+                    settleText(profile)
+                    return
+                }
+                is RoundOutcome.Failed -> {
+                    settleError(round.error)
+                    return
+                }
+                is RoundOutcome.Calls -> {
+                    rounds += 1
+                    if (rounds > maxToolRounds) {
+                        // 打转闸：不是网络错也不是模型错，是「这题该拆小」——出路话在分类那边
+                        settleError(GenerationError.ToolLoopLimit(rounds))
+                        return
+                    }
+                    // 工具动作的账：先回填 assistant（带 tool_calls），再逐条执行、逐条回填结果。
+                    // 执行前每步出声（toolLine 更新），失败也照样喂回（工具失败是给模型的证据）。
+                    history = history + ToolTurnBuilder.assistantTurn(round.roundText, round.calls)
+                    for (call in round.calls) {
+                        if (stopRequested) {
+                            settleCancelled()
+                            return
+                        }
+                        updateToolLine("正在调工具：${call.name}…")
+                        val outcome = toolRegistry.execute(call.name, call.argumentsJson)
+                        updateToolLine(toolLineFor(call.name, outcome.ok, outcome.text))
+                        history = history + ToolTurnBuilder.toolResultTurn(call, outcome.text)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 一回合的收场（对上层）：文本收了、要调工具、还是失败。 */
+    private sealed class RoundOutcome {
+        /** [roundText] = 这一轮模型自己说出口的字（工具回合回填历史时要带）。 */
+        class Calls(val calls: List<AssembledToolCall>, val roundText: String) : RoundOutcome()
+        object Text : RoundOutcome()
+        class Failed(val error: GenerationError) : RoundOutcome()
+    }
+
+    /** 发一轮并收一轮（工具协议开着的就带 tools 清单；表空的走老路，行为逐字不变）。 */
+    private fun runOneRound(profile: ProviderProfile, history: List<ChatTurn>): RoundOutcome {
         val slot = synchronized(lock) { activeSlot ?: GenerationSlot().also { activeSlot = it } }
-        val error = try {
-            OpenAiCompatClient(
+        val roundText = StringBuilder()
+        val outcome = try {
+            val client = OpenAiCompatClient(
                 transport = transportFactory(),
                 slot = slot,
                 // 花钱请求要不要自动重发，读的是设置页那个真开关（唯一通道 retryPolicyFor 的语义）。
                 policy = RetryPolicy(retryOnCostlyRequests = autoRetryCostly()),
                 watchdog = IdleWatchdog(IdleWatchdog.GENERATION_IDLE_MS),
-            ).chat(profile, history) { chunk -> appendStreaming(chunk) }
+            )
+            if (toolRegistry.isEmpty()) {
+                // 表空：走老形状（不带 tools 字段）。模型回了工具调用按形状异常报错——
+                // 没带清单却回调用，当成功或当文本都说不通（这层的语义在客户端那侧钉过）。
+                val error = client.chat(profile, history) { chunk ->
+                    roundText.append(chunk)
+                    appendStreaming(chunk)
+                }
+                if (error == null) RoundOutcome.Text else RoundOutcome.Failed(error)
+            } else {
+                when (
+                    val outcome = client.chatTurns(profile, history, tools = toolRegistry.specs()) { chunk ->
+                        roundText.append(chunk)
+                        appendStreaming(chunk)
+                    }
+                ) {
+                    is ChatOutcome.Text -> RoundOutcome.Text
+                    is ChatOutcome.Calls -> RoundOutcome.Calls(outcome.calls, roundText.toString())
+                    is ChatOutcome.Failed -> RoundOutcome.Failed(outcome.error)
+                }
+            }
         } finally {
             synchronized(lock) { activeSlot = null }
         }
+        return outcome
+    }
+
+    /** 文本收场：有字就定成成品卡（署名换回端点名）；一个字都没有就替链路认账，不冒充成品。 */
+    private fun settleText(profile: ProviderProfile) {
         synchronized(lock) {
             val base = messages.dropLast(1)
             val last = messages.lastOrNull()
             val finished = last?.text ?: ""
             messages = when {
-                // 有错：错误卡带出路；已有半截就原文留在卡上，标清「不完整」
-                error != null -> base + ChatMsg(
-                    who = listOf(Badge("系统", Tone.Err)),
-                    time = now(),
-                    text = if (finished.isEmpty()) error.userMessage()
-                    else error.userMessage() + "\n——已收到的半截（不完整，别当成品）——\n" + finished,
-                    isError = true,
-                )
-                // 没错且有字：成品卡（last 在此分支必非空：finished 非空就来自它）
                 last != null && finished.isNotEmpty() -> base + last.copy(
                     who = listOf(Badge(profile.name, Tone.Neutral)),
                 )
-                // 没错但一个字没有：这是链路说谎，替模型认账是假、替它遮掩更糟
+                // 一个字都没收到：这是链路说谎，替模型认账是假、替它遮掩更糟
                 else -> base + ChatMsg(
                     who = listOf(Badge("系统", Tone.Err)),
                     time = now(),
@@ -258,9 +356,43 @@ class ChatRuntime(
                 )
             }
             busy = false
-            // 收场即落一行：存的是屏上那张卡的原文（半截也照存 + incomplete 标记），
-            // 重开摆回来的就是用户当时看见的东西，一字不差。
-            persistSettleLocked(finished, isErrorCard = error != null)
+            persistSettleLocked(finished, isErrorCard = finished.isEmpty())
+        }
+    }
+
+    /** 用户按停收场：不算失败，但半截话照留并标清（与老版同款；工具轮之间按停走这里）。 */
+    private fun settleCancelled() {
+        synchronized(lock) {
+            val base = messages.dropLast(1)
+            val last = messages.lastOrNull()
+            val finished = last?.text ?: ""
+            messages = base + ChatMsg(
+                who = listOf(Badge("系统", Tone.Err)),
+                time = now(),
+                text = GenerationError.Cancelled.userMessage() +
+                    if (finished.isNotEmpty()) "\n——已收到的半截（不完整，别当成品）——\n$finished" else "",
+                isError = true,
+            )
+            busy = false
+            persistSettleLocked(finished, isErrorCard = true)
+        }
+    }
+
+    /** 错误收场：错误卡带出路；半截话留在卡上标清「不完整」（网络错、打转上限都走这里）。 */
+    private fun settleError(error: GenerationError) {
+        synchronized(lock) {
+            val base = messages.dropLast(1)
+            val last = messages.lastOrNull()
+            val finished = last?.text ?: ""
+            messages = base + ChatMsg(
+                who = listOf(Badge("系统", Tone.Err)),
+                time = now(),
+                text = if (finished.isEmpty()) error.userMessage()
+                else error.userMessage() + "\n——已收到的半截（不完整，别当成品）——\n" + finished,
+                isError = true,
+            )
+            busy = false
+            persistSettleLocked(finished, isErrorCard = true)
         }
     }
 
@@ -272,6 +404,23 @@ class ChatRuntime(
             val last = messages.last()
             messages = base + last.copy(text = last.text + chunk)
         }
+    }
+
+    /** 工具动作回显：更新最后一张卡的 toolLine（每步出声，失败也出声）。 */
+    private fun updateToolLine(line: String) {
+        synchronized(lock) {
+            if (messages.isEmpty()) return
+            val base = messages.dropLast(1)
+            val last = messages.last()
+            messages = base + last.copy(toolLine = line, toolIconKey = IconKey.Telescope)
+        }
+    }
+
+    /** 工具回显行的人的写法：成功给结果头一段，失败给「失败」+ 原因头一段。 */
+    private fun toolLineFor(name: String, ok: Boolean, text: String): String {
+        val flat = text.replace('\n', ' ').trim()
+        val head = if (flat.length <= 80) flat else flat.take(80) + "…"
+        return (if (ok) "工具 $name：" else "工具 $name 失败：") + head
     }
 
     /** 没接库就不动盘；接了库就把当前户头补上（首次发话时创建 + 补标题 + 落用户行）。 */
@@ -293,8 +442,8 @@ class ChatRuntime(
 
     /**
      * 收场那行：错误/半截存 error 角色（喂模型时永远剔掉），成品存 assistant。
-     * isErrorCard 传「error != null」即可：error 卡落 error 角色；error 为 null 时
-     * 最后那张卡必是成品（空收场在上面已兜底成错误卡，但那条走的是 error != null 路径）。
+     * isErrorCard 传「这次收场是不是错误卡」即可：error 卡落 error 角色；正常收场时
+     * 最后那张卡必是成品（空收场已被 [settleText] 兜成错误卡，走的是 isErrorCard 路径）。
      */
     private fun persistSettleLocked(finished: String, isErrorCard: Boolean) {
         if (!isErrorCard && finished.isEmpty()) return // 双保险：不落空行
@@ -356,6 +505,9 @@ class ChatRuntime(
 
         /** 历史上限的兜底默认（设置里可配，读不到就用它）。 */
         const val MAX_HISTORY_TURNS = 40
+
+        /** 工具回合轮次上限（防模型连轴转地调工具不给答案）；打到上限按拆小问题收场。 */
+        const val MAX_TOOL_ROUNDS = 6
     }
 }
 

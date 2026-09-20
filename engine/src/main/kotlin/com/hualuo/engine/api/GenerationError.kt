@@ -56,6 +56,12 @@ sealed class GenerationError {
     /** 工具执行失败（记忆、联网、shell、RAG）。 */
     data class ToolExecution(val toolName: String, val arguments: String, val message: String) : GenerationError()
 
+    /**
+     * 工具回合打到轮次上限（模型连轴转地调工具，迟迟不给答案）：防无限打转的闸门。
+     * 这不是网络错也不是模型错，是「这题该拆小」——出路必须这么指。
+     */
+    data class ToolLoopLimit(val rounds: Int) : GenerationError()
+
     /** 图片/视频/PDF 转写失败。 */
     data class Transcription(val path: String, val kind: String, val message: String) : GenerationError()
 
@@ -136,6 +142,9 @@ sealed class GenerationError {
             "回答撞到输出长度上限被切掉（stop_reason=${stopReason ?: "max_tokens"}）。" +
                 "把设置里的最大输出 token 调大，或把思考预算调小，再重发"
         is ToolExecution -> "工具「$toolName」执行失败：${brief(message)}（参数：${brief(arguments)}）"
+        // 打转闸的出路不是「重试」而是「拆小」：重发同一份问题只会再打一次转。
+        is ToolLoopLimit -> "工具来回 $rounds 轮还没给出答案：先停下（防无限打转）。" +
+            "把问题拆小一点，或者直接点名要哪一步的结果（比如「先列出我的仓库」）"
         is Transcription -> "${kind}转写失败：${brief(message)}（$path）"
         is Embedding -> "向量计算失败（$modelId）：${brief(message)}"
         is Configuration -> "设置还没配好：$message"

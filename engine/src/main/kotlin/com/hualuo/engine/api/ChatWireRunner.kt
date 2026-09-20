@@ -8,6 +8,8 @@ import com.hualuo.engine.http.HttpTaxonomy
 import com.hualuo.engine.http.RequestCost
 import com.hualuo.engine.http.RetryDecision
 import com.hualuo.engine.http.RetryPolicy
+import com.hualuo.engine.toolcalls.AssembledToolCall
+import com.hualuo.engine.toolcalls.ToolCallAssembler
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
@@ -17,9 +19,17 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** 一次完整运行的结果：成功（文本已逐段交给回调），或者带出路的分类错误。 */
+/** 一次完整运行的结果：成功（文本已逐段交给回调）、模型要调工具，或者带出路的分类错误。 */
 sealed class ChatRunResult {
     object Ok : ChatRunResult()
+
+    /**
+     * 模型这一轮要调工具（tool_calls 协议）：[calls] 是装配完整的调用清单，
+     * [producedText] = 这轮到达 [onText] 的文本（模型常先交代一句再调工具，那段话不丢）。
+     * 调用方（ChatRuntime）负责执行、把结果回填进历史、再发起下一轮。
+     */
+    data class ToolCalls(val calls: List<AssembledToolCall>, val producedText: Boolean) : ChatRunResult()
+
     data class Failed(val error: GenerationError) : ChatRunResult()
 }
 
@@ -34,7 +44,8 @@ sealed class ChatRunResult {
  *   该等就等再来，该放手就放手翻成「带出路的错」，出门必放槽。
  *
  * 红线（与 RetryPolicy 的文案一一对应，不是口号）：
- *  1) 花钱请求收到过内容字节，绝不自动盲重；
+ *  1) 花钱请求收到过内容字节，绝不自动盲重；流上先出过工具调用碎片的同理（半份工具调用
+ *     重发没有意义，只会再花一遍钱）；
  *  2) 上下文超限永不重发（证据在体里，与状态码无关）——网关拿 502 包着
  *     "Your input exceeds the context window" 也一样：RetryPolicy 靠 body 关键词定性，
  *     这层只负责把「中文出路 + 对方原话证据」完完整整交到界面上；
@@ -42,6 +53,11 @@ sealed class ChatRunResult {
  *     **不过决策表**（事实明确直接出局），所以归因必须在解析器里就地做——
  *     否则超限错误会顶着「code：message」的平话脸出街，出路话全丢；
  *  3) 任何收场都放槽（runGuarded 兜底，被顶替走 stranded 单独出声）。
+ *
+ * **tool_calls（0.7.0 协议刀补上）**：流上出现工具调用碎片时由解析器里的
+ * [ToolCallAssembler] 按 index 装配；流正常收尾且装出了调用，就返回
+ * [ChatRunResult.ToolCalls]。半路断流而装过碎片时，[GenerationError.IncompleteStream]
+ * 的 toolCallInFlight 证据为真（「当时正在写一个工具调用」这句话才有据可查）。
  *
  * 线程模型：[run] 设计给**后台线程**调用（内部阻塞读流 + sleeper 等待）；
  * 本层不碰协程库（D-03 纯 JVM）。取消靠 [GenerationSlot.stop]：它会调这里的
@@ -85,7 +101,9 @@ class ChatWireRunner(
                 // 槽已经不归我：说明按过停止或被新任务顶替，这次结果一律不算正常收场。
                 return ChatRunResult.Failed(
                     if (stopRequested) GenerationError.Cancelled
-                    else GenerationError.IncompleteStream(providerLabel, bundle.stopReason, false, bundle.sawText),
+                    else GenerationError.IncompleteStream(
+                        providerLabel, bundle.stopReason, bundle.sawToolCallFrames, bundle.sawText,
+                    ),
                 )
             }
             // 行超限、流中 error 块这类：事实明确，不劳驾决策表，直接出局。
@@ -105,15 +123,20 @@ class ChatWireRunner(
                     if (!bundle.finished) {
                         return ChatRunResult.Failed(
                             GenerationError.IncompleteStream(
-                                providerLabel, bundle.stopReason, false, bundle.sawText,
+                                providerLabel, bundle.stopReason, bundle.sawToolCallFrames, bundle.sawText,
                             ),
                         )
                     }
                     // 收尾标记齐全但 finish_reason=length：话说完了是假象，上限吃了后半截。
+                    // 工具调用也走这条：被 length 截断的参数多半是半份 JSON，宁可按截断报，
+                    // 不把坏参数递去执行（执行侧的解析报错会指错病根）。
                     if (bundle.stopReason == "length") {
                         return ChatRunResult.Failed(
                             GenerationError.OutputTruncated(providerLabel, bundle.stopReason),
                         )
+                    }
+                    if (bundle.toolCalls.isNotEmpty()) {
+                        return ChatRunResult.ToolCalls(bundle.toolCalls, bundle.sawText)
                     }
                     return ChatRunResult.Ok
                 }
@@ -148,6 +171,8 @@ class ChatWireRunner(
                     finished = parser.finished,
                     stopReason = parser.finishReason,
                     sawText = parser.sawText,
+                    sawToolCallFrames = parser.sawToolCallFrames,
+                    toolCalls = parser.assembledToolCalls(),
                     apiError = null,
                     hardError = parser.streamError,
                 )
@@ -164,6 +189,8 @@ class ChatWireRunner(
                     finished = false,
                     stopReason = null,
                     sawText = false,
+                    sawToolCallFrames = false,
+                    toolCalls = emptyList(),
                     apiError = providerHttpError(response.status, response.errorBody),
                     hardError = null,
                 )
@@ -175,6 +202,8 @@ class ChatWireRunner(
                 finished = false,
                 stopReason = null,
                 sawText = parser.sawText,
+                sawToolCallFrames = parser.sawToolCallFrames,
+                toolCalls = parser.assembledToolCalls(),
                 apiError = null,
                 hardError = GenerationError.SseParse("（一行超过上限，原文没带回来）", e.message ?: "行超限"),
             )
@@ -197,6 +226,8 @@ class ChatWireRunner(
                 finished = false,
                 stopReason = parser.finishReason,
                 sawText = parser.sawText,
+                sawToolCallFrames = parser.sawToolCallFrames,
+                toolCalls = parser.assembledToolCalls(),
                 apiError = null,
                 hardError = parser.streamError,
             )
@@ -223,6 +254,10 @@ class ChatWireRunner(
         val finished: Boolean,
         val stopReason: String?,
         val sawText: Boolean,
+        /** 流上到过工具调用碎片没有（收尾失败时的证据位：「当时正在写工具调用」）。 */
+        val sawToolCallFrames: Boolean,
+        /** 装配完整的工具调用（流收尾正常且有调用时，上层拿它去执行）。 */
+        val toolCalls: List<AssembledToolCall>,
         val apiError: GenerationError.Api?,
         val hardError: GenerationError?,
     )
@@ -243,6 +278,9 @@ class ChatWireRunner(
  *  2. **打码**：给人看的 message 一律先过 maskSecrets。错误体是不可信输入，
  *     有的网关把请求上下文原样回显（内含 api_key/Bearer），providerHttpError 那条
  *     路早就设了防，这条流中路原来裸奔——密钥绝不外泄没有例外路径。
+ *
+ * **tool_calls（0.7.0 协议刀）**：delta.tool_calls（非流式形状则在 message.tool_calls）
+ * 逐帧喂给 [toolAssembler] 按 index 装配；本类不解释参数内容，只保证碎片拼得全。
  */
 class OpenAiSseParser(private val onText: (String) -> Unit) {
 
@@ -256,6 +294,15 @@ class OpenAiSseParser(private val onText: (String) -> Unit) {
         private set
     var streamError: GenerationError? = null
         private set
+
+    /** 到过工具调用碎片没有（收尾失败时的证据位）。 */
+    var sawToolCallFrames = false
+        private set
+
+    private val toolAssembler = ToolCallAssembler()
+
+    /** 装配完整的工具调用清单（可重复取；未收尾时取到的是半份，判官在 ChatWireRunner）。 */
+    fun assembledToolCalls(): List<AssembledToolCall> = toolAssembler.finish()
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -309,6 +356,13 @@ class OpenAiSseParser(private val onText: (String) -> Unit) {
         if (!content.isNullOrEmpty()) {
             sawText = true
             onText(content)
+        }
+        // 工具调用碎片：流式形状在 delta.tool_calls，非流式形状在 message.tool_calls。
+        // 条目没有 index 的（非流式）用数组位置当 index，装配器两形状通吃。
+        (delta?.get("tool_calls") as? JsonArray)?.forEachIndexed { position, element ->
+            val item = element as? JsonObject ?: return@forEachIndexed
+            sawToolCallFrames = true
+            toolAssembler.feed(item, defaultIndex = position)
         }
         val reason = (choice["finish_reason"] as? JsonPrimitive)?.contentOrNull
         if (!reason.isNullOrEmpty()) {
