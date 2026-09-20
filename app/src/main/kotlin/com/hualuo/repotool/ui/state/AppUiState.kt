@@ -54,6 +54,9 @@ data class CourierPick(
  *    让引擎测试不碰真网，这里给的就是真网）；结果真数据、失败出声不冒充。
  *  - **长任务页真电（文件投递）**：选文件/选目录只发动作请求（[pendingDataAction] 桥上走），
  *    收集与分卷投递在根界面的后台线程（CourierDelivery）；目标仓/分支/令牌在设置「文件投递」。
+ *  - **工具族（0.7.0 刀②）**：GitHub 读类十件注册进 [chat]（列仓、看别人的仓、浏览目录、
+ *    读文件、搜代码、分支、提交历史、CI 三层）；写类刻意不进表（写操作要有独立确认通道）。
+ *    令牌与默认仓库在执行那一刻从设置现场读（[buildGithubToolRegistry]），改了下一句生效。
  *  - **备份（数据控制）**：按钮只发出动作请求（[pendingDataAction]），系统文件选择器在
  *    RootScreen 那层开；导入的设置**必须**经 [applyImportedBackup] / [applyAgoraImport]
  *    走活通道进——绕过活通道直接写文件，会被下一次 flush 用旧值盖掉（两份事实的老病）。
@@ -150,7 +153,8 @@ class AppUiState(
     // ── 回合流真运行层 ──────────────────────────────────────────────────────
 
     /**
-     * 真说过的话与生成槽都住这里（契约见 ChatRuntime），会话仓与上下文喂养同刀接进。
+     * 真说过的话与生成槽都住这里（契约见 ChatRuntime），会话仓与上下文喂养同刀接进；
+     * 工具族（0.7.0 刀②）同刀接进：GitHub 读类十件（写类不进表，见 ToolWiring）。
      * 三个真开关全部具名传：尾随 lambda 会绑到 ChatRuntime 的最后一个参数（clock），
      * 拿开关去尾随就是拿 Boolean 冒充 Long——CI 编译段抓到过，别再犯。
      */
@@ -160,6 +164,7 @@ class AppUiState(
         store = store,
         maxHistoryTurns = { readInt(UiKeys.MAX_HISTORY, ChatRuntime.MAX_HISTORY_TURNS).coerceIn(1, 500) },
         systemPrompt = { persist.load(ChatRuntime.KEY_SYSTEM_PROMPT)?.trim().orEmpty() },
+        toolRegistry = buildGithubToolRegistry(persist),
     )
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
