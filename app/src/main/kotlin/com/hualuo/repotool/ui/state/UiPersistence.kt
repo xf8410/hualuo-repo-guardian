@@ -81,6 +81,14 @@ object UiKeys {
     const val GITHUB_REPO = "github.repo"
     const val GITHUB_TOKEN = "github.token"
 
+    /**
+     * GitHub 登录态（2026-09-22）：验证通过后记下的登录名与权限清单文本（X-OAuth-Scopes）。
+     * 空串 = 未登录。令牌本体在 [GITHUB_TOKEN]；这里只记「验过的是谁、有什么权限」——
+     * 填了令牌不等于登录，验过才算。
+     */
+    const val GITHUB_LOGIN = "github.login"
+    const val GITHUB_SCOPES = "github.scopes"
+
     /** CI 红绿提醒的开关与记账（后台轮询见 notify/CiNotifyWorker）。首次上线 2026-09-16。 */
     const val CI_NOTIFY = "ui.ci_notify_on"
     const val CI_LAST_RUN_ID = "ci.last_run_id"
