@@ -55,7 +55,7 @@ fun buildGithubToolRegistry(
                 rootfsDir = File(root, "rootfs"),
                 workDir = File(root, "work"),
                 sharedDir = File(root, "shared"),
-                sessionProvider = { rootfs -> ProotSession(rootfsDir = rootfs, sharedDir = File(root, "shared")) },
+                sessionProvider = { rootfs, binds -> ProotSession(rootfsDir = rootfs, sharedDir = File(root, "shared"), bindMounts = binds) },
             ),
             confirmer = sandboxConfirmer,
         )
