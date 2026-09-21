@@ -40,6 +40,9 @@ fun readBounded(stream: InputStream, maxChars: Int): BoundedBody {
  * 默认 GET 实现：15 秒超时、令牌只进头、异常折成 status=0（body 带原因）。
  * [accept] 缺省走 JSON 档；GitHubRepoClient 读文件原文时传 raw 档。
  * [maxChars] 给读大文件清单的调用方放宽（默认 512K 全仓纪律）。
+ *
+ * X-OAuth-Scopes 响应头原文一并带出（[GitHubHttpResult.scopes]）：登录验证用它显示
+ * 「这枚令牌有什么权限」；没有这个头（细粒度令牌常见）就回空串，空不是失败。
  */
 fun githubHttpGet(url: String, token: String?, accept: String? = null, maxChars: Int = GITHUB_MAX_BODY_CHARS): GitHubHttpResult = try {
     val conn = URL(url).openConnection() as HttpURLConnection
@@ -50,9 +53,10 @@ fun githubHttpGet(url: String, token: String?, accept: String? = null, maxChars:
     conn.setRequestProperty("user-agent", "hualuo-repo-tool")
     if (!token.isNullOrBlank()) conn.setRequestProperty("authorization", "Bearer $token")
     val status = conn.responseCode
+    val scopes = conn.getHeaderField("X-OAuth-Scopes").orEmpty()
     val stream = if (status in 200..299) conn.inputStream else conn.errorStream
     val body = stream?.use { readBounded(it, maxChars) }
-    GitHubHttpResult(status, body?.text ?: "", body?.truncated ?: false)
+    GitHubHttpResult(status, body?.text ?: "", body?.truncated ?: false, scopes)
 } catch (e: IOException) {
     GitHubHttpResult(0, e.message ?: "网络不通", false)
 } catch (e: Exception) {
