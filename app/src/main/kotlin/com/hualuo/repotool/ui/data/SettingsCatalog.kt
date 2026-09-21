@@ -1,3 +1,5 @@
+package com.hualuo.repotool.ui.data
+
 import com.hualuo.repotool.ui.model.IconKey
 import com.hualuo.repotool.ui.model.SettingsItem
 import com.hualuo.repotool.ui.model.SettingsSection
