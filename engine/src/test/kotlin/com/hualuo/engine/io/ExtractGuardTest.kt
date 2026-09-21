@@ -125,17 +125,18 @@ class ExtractGuardTest {
     }
 
     @Test
-    fun `异常消息里的原始名会被脱敏`() {
+    fun `异常消息里的原始名控制字符可视化且不截断`() {
+        // 零脱敏纪律：内容一字不改——只把控制字符（换行等）可视化成点防伪造日志行；
+        // 长名不再截断（截断=丢数据）。
         val withNewline = reject("点点加换行") { normalizeEntryPath(rootDir, "..\n伪造一行日志") }
         assertFalse(
-            "原始名里的换行不许进消息，否则能伪造日志行：$withNewline",
+            "换行要可视化成点（防伪造日志行），但内容字符一个不少：$withNewline",
             withNewline.contains('\n'),
         )
         val tooLong = reject("三百个x/../坏.bin") {
             normalizeEntryPath(rootDir, "x".repeat(300) + "/../坏.bin")
         }
-        assertTrue("超长名要截断，实际是：$tooLong", tooLong.contains("等截"))
-        assertTrue("整条消息不许被名字撑爆，实际长度 ${tooLong.length}", tooLong.length < 400)
+        assertTrue("300 个 x 原文全在（零截断）：${tooLong.length} 字符", tooLong.count { it == 'x' } >= 300)
     }
 
     @Test

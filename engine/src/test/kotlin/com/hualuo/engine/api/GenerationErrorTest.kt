@@ -87,14 +87,14 @@ class GenerationErrorTest {
     }
 
     @Test
-    fun unknownExceptionNeverLeaksTheKeyItCarried() {
-        // 有些网关把密钥写在查询串上；异常原文进界面之前必须打码
+    fun unknownExceptionCarriesTheKeyItCarried() {
+        // 零脱敏纪律：异常原文进界面一字不改——网关写在查询串上的 api_key 原样显示
         val boom = IllegalStateException(
             "connect failed https://gw.example.com/v1/chat/completions?api_key=sk-abcdef1234567890ABCDEFGH",
         )
         val message = GenerationError.Unknown(boom).userMessage()
-        assertFalse("密钥原文不许出现在给人看的那句里：$message", message.contains("sk-abcdef1234567890ABCDEFGH"))
-        assertTrue("但要留得下线索让人认得出是哪次：$message", message.contains("gw.example.com"))
+        assertTrue("密钥原文必须在场（零脱敏）：$message", message.contains("sk-abcdef1234567890ABCDEFGH"))
+        assertTrue("线索保留：$message", message.contains("gw.example.com"))
     }
 
     @Test
@@ -107,28 +107,24 @@ class GenerationErrorTest {
     }
 
     @Test
-    fun maskingHitsSecretsButNotNormalWords() {
-        val masked = maskSecrets("Authorization: Bearer sk-proj-AAAAAAAAAAAAAAAAAAAA")
-        assertFalse(masked.contains("AAAAAAAAAAAAAAAAAAAA"))
-        assertTrue(masked.contains("Bearer"))
+    fun plaintextPassesThroughVerbatim() {
+        // 零脱敏纪律（ULTIMATE_RULE ZERO）：错误原文一字不改——密钥串照实显示
+        val text = "Authorization: Bearer sk-proj-AAAAAAAAAAAAAAAAAAAA"
+        val msg = GenerationError.Network(500, text).userMessage()
+        assertTrue("密钥原文必须在场：$msg", msg.contains("sk-proj-AAAAAAAAAAAAAAAAAAAA"))
+        assertTrue("Bearer 保留：$msg", msg.contains("Bearer"))
 
-        val labeled = maskSecrets("key=1234567890abcdef1234567890abcdef&model=x")
-        assertFalse(labeled.contains("1234567890abcdef1234567890abcdef"))
-
-        // 正常内容不许被啃：中文句子、主机名、短模型名
-        val plain = "请检查 api.openai.com 上的 gpt-4o-mini 是否可用"
-        assertTrue(masked.length > 0)
-        assertTrue("正常句子不该动：$plain", maskSecrets(plain) == plain)
+        val labeled = "key=1234567890abcdef1234567890abcdef&model=x"
+        val msg2 = GenerationError.Network(500, labeled).userMessage()
+        assertTrue("key 值原文必须在场：$msg2", msg2.contains("1234567890abcdef1234567890abcdef"))
     }
 
     @Test
-    fun datedModelNameGetsMaskedOnPurpose() {
-        // 取舍要说在前面：20 位以上的字母数字串一律打码，会误伤 `claude-3-5-sonnet-20240620`
-        // 这种带日期的模型名。宁可多打码也不能漏密钥 —— 这条不是 bug，是选边。
+    fun datedModelNamePassesThroughVerbatim() {
+        // 零脱敏后不再有「误伤模型名」的取舍：带日期的模型名原文直通
         val text = "model claude-3-5-sonnet-20240620 not found"
-        val masked = maskSecrets(text)
-        assertFalse(masked.contains("claude-3-5-sonnet-20240620"))
-        assertTrue("短名字不受影响", maskSecrets("model gpt-4o not found") == "model gpt-4o not found")
+        val msg = GenerationError.Network(500, text).userMessage()
+        assertTrue("模型名原文必须在场：$msg", msg.contains("claude-3-5-sonnet-20240620"))
     }
 
     @Test

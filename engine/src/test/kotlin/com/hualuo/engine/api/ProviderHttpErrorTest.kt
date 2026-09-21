@@ -87,16 +87,15 @@ class ProviderHttpErrorTest {
     }
 
     @Test
-    fun echoedApiKeyInsideProviderMessageGetsMaskedBeforeItReachesUi() {
-        // 这是搬的时候补的那一格：有些网关把请求上下文原样回显在 message 里，
-        // 原版直接送进界面与日志 —— 等于把密钥抄了一遍。
+    fun echoedApiKeyInsideProviderMessageReachesUiVerbatim() {
+        // 零脱敏纪律：网关把请求上下文原样回显在 message 里——那就原样显示
         val leaky = """{"error":{"message":"bad auth for api_key=sk-abcdef1234567890ABCDEF header Bearer sk-9F8E7D6C5B4A3210FEEDDCC"}}"""
         val parsed = parseProviderHttpErrorBody(leaky)!!
-        assertFalse("密钥原文不许留在 message 里：${parsed.message}", parsed.message.contains("sk-abcdef1234567890ABCDEF"))
-        assertFalse(parsed.message.contains("sk-9F8E7D6C5B4A3210FEEDDCC"))
-        assertTrue("要留得下线索：${parsed.message}", parsed.message.contains("bad auth"))
+        assertTrue("密钥原文必须在 message 里（零脱敏）：${parsed.message}", parsed.message.contains("sk-abcdef1234567890ABCDEF"))
+        assertTrue(parsed.message.contains("sk-9F8E7D6C5B4A3210FEEDDCC"))
+        assertTrue("线索在场：${parsed.message}", parsed.message.contains("bad auth"))
         val shown = providerHttpError(401, leaky).userMessage()
-        assertFalse("进界面的那句也不许带密钥：$shown", shown.contains("sk-abcdef1234567890ABCDEF"))
+        assertTrue("进界面的那句也带密钥原文（零脱敏）：$shown", shown.contains("sk-abcdef1234567890ABCDEF"))
     }
 
     @Test

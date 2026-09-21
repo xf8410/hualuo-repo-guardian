@@ -274,8 +274,8 @@ class ChatWireRunner(
  *  1. **归因**：错误块文本（message + code + type 拼一起）命中上下文超限关键词
  *     （HttpTaxonomy.isContextOverflow）就翻成 Transport(ContextOverflow)——
  *     出路话「删历史/开新会话」才接得上；不然 200 外壳裹着超限错误只会平话出街。
- *     判定用**未打码原文**：打码会在长串里插星号，万一真把关键词拆了就漏判；
- *  2. **打码**：给人看的 message 一律先过 maskSecrets。错误体是不可信输入，
+ *     判定用**原文**（零脱敏纪律：本仓不打码，判定与显示同一份原文）；
+ *  2. **原文直通**：给人看的 message 一字不改（零脱敏纪律）。
  *     有的网关把请求上下文原样回显（内含 api_key/Bearer），providerHttpError 那条
  *     路早就设了防，这条流中路原来裸奔——密钥绝不外泄没有例外路径。
  *
@@ -335,17 +335,17 @@ class OpenAiSseParser(private val onText: (String) -> Unit) {
             val code = (err["code"] as? JsonPrimitive)?.contentOrNull
             val type = (err["type"] as? JsonPrimitive)?.contentOrNull
             // 归因证据 = message + code + type 拼一起（有的家只给 code 不给话）；
-            // 用未打码原文判，打码后判（星号插进关键词）会漏。
+            // 原文判定（零脱敏：显示与判定同一份原文）。
             val evidence = buildString {
                 append(rawMessage)
                 if (!code.isNullOrBlank()) append(' ').append(code)
                 if (!type.isNullOrBlank()) append(' ').append(type)
             }
-            val safeMessage = maskSecrets(rawMessage)
+            val rawMessageFull = rawMessage  // 零脱敏：原文直通
             streamError = if (HttpTaxonomy.isContextOverflow(evidence)) {
-                GenerationError.Transport(FailureClass.ContextOverflow, safeMessage)
+                GenerationError.Transport(FailureClass.ContextOverflow, rawMessageFull)
             } else {
-                GenerationError.Api(code = code, type = type, message = safeMessage)
+                GenerationError.Api(code = code, type = type, message = rawMessageFull)
             }
             return
         }

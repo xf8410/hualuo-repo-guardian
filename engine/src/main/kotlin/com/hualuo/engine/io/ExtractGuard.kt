@@ -22,7 +22,7 @@ import java.util.Locale
  *   1) 路径判断**全在字符串层面做完**，最后才交给 File。Linux 上反斜杠是合法文件名字符，
  *      Windows 上 `C:` 与 `C:\` 指同一个目录——交给 File 去比较就会漏。
  *   2) 百分号还原要**做到不再变化为止**，只还原一次的话 `%252e` 这类双层编码能绕过全部检查。
- *   3) 异常消息里带用户可控的原始名时必须脱敏（控制字符换点 + 限长），
+ *   3) 异常消息里带用户可控的原始名时控制字符可视化（内容零改动），
  *      否则一个换行就能在日志里伪造出一条"看起来是我自己写的"记录。
  *   4) 跨层控制流只用 `for` + `break`。上一版在 `repeat(3) {}` 里写
  *      `return@percentDecodeName`，那是把函数名当标签用，编译器不认（顶层函数没有隐式标签），
@@ -54,11 +54,9 @@ data class ExtractLimits(
         "条目数不超过 $maxEntries，单条目不超过 $maxEntryBytes 字节，总量不超过 $maxTotalBytes 字节，压缩比不超过 $maxRatio"
 }
 
-/** 用户可控文本进日志或异常消息之前一律脱敏：控制字符换成点，超过 120 字符截断。 */
-internal fun sanitizeForLog(raw: String): String {
-    val clean = raw.map { if (it.code < 0x20 || it.code == 0x7F) '.' else it }.joinToString("")
-    return if (clean.length <= 120) clean else clean.take(117) + "等截"
-}
+/** 控制字符可视化（换行/回车等换成点，防伪造日志行）；内容本身零改动零截断。 */
+internal fun sanitizeForLog(raw: String): String =
+    raw.map { if (it.code < 0x20 || it.code == 0x7F) '.' else it }.joinToString("")
 
 /**
  * 条目名先还原再校验，顺序不能反。

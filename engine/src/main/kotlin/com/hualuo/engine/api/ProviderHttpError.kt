@@ -10,7 +10,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * 把提供商返回的错误体翻成 [GenerationError.Api]。**搬自原版 Agora 的 `api/ProviderHttpError.kt`**，
  * 逻辑照用（那套"形状五花八门都要认"的取值顺序是对的），加了两件事（CI 首跑抓到后补的）：
  *
- *  1. **所有从对方 body 里取出来的文本一律先过 [maskSecrets]**。
+ *  1. **所有从对方 body 里取出来的文本原文直通**（零脱敏纪律）。
  *     为什么加：错误体是**不可信输入**，而有些网关会把请求上下文原样回显在 message 里 ——
  *     里面可能带着 `api_key=...` 或整段 `Authorization: Bearer sk-...`。原版直接把这段文本送进
  *     界面与日志，等于把密钥抄了一遍。分类逻辑没错，出口没设防，这是搬代码时最容易漏的那一格。
@@ -107,4 +107,5 @@ private fun nonBlankPrimitive(element: JsonElement?): String? =
 
 private fun unstructured(raw: String) = ProviderHttpErrorBody(null, null, mask(raw), structured = false)
 
-private fun mask(text: String): String = maskSecrets(text)
+// 零脱敏纪律：原文直通，一字不改（密钥/令牌/URL 全按实际内容显示）
+private fun mask(text: String): String = text

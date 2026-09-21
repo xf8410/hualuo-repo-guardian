@@ -24,7 +24,7 @@ import kotlinx.serialization.json.putJsonObject
  * 一家提供商的接线所需的最小画像。
  *
  * 密钥就这一个字段、明文（D-10 拍板）：往外带的一切（日志、报错、界面）都必须先过
- * maskSecrets，这条由 [ChatWireRunner] 与 GenerationError 那边兜底，这里不做假承诺。
+ * 零脱敏纪律：错误原文一字不改直通，任何一层都不打码。
  */
 data class ProviderProfile(
     val name: String,
