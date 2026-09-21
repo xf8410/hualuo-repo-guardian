@@ -15,9 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +26,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.ui.state.AppUiState
+import com.hualuo.repotool.ui.state.UiKeys
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.CardBg
@@ -96,7 +94,7 @@ fun GithubLoginCard(state: AppUiState) {
                 .border(1.dp, Hairline, RoundedCornerShape(12.dp))
                 .padding(horizontal = 12.dp, vertical = 11.dp),
         ) {
-            val token = state.text(com.hualuo.repotool.ui.state.UiKeys.GITHUB_TOKEN)
+            val token = state.text(UiKeys.GITHUB_TOKEN)
             if (token.isEmpty()) {
                 Text(
                     "粘贴 GitHub 访问令牌（classic 勾 repo 与 workflow；细粒度给 Contents 读）",
@@ -106,7 +104,7 @@ fun GithubLoginCard(state: AppUiState) {
             }
             BasicTextField(
                 value = token,
-                onValueChange = { state.setText(com.hualuo.repotool.ui.state.UiKeys.GITHUB_TOKEN, it) },
+                onValueChange = { state.setText(UiKeys.GITHUB_TOKEN, it) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 textStyle = TextStyle(fontSize = 13.sp, color = Ink, fontFamily = FontFamily.Monospace),
@@ -122,7 +120,7 @@ fun GithubLoginCard(state: AppUiState) {
                     .clip(RoundedCornerShape(12.dp))
                     .background(if (login.busy) SubInk else Accent)
                     .clickable(enabled = !login.busy) {
-                        login.login(state.text(com.hualuo.repotool.ui.state.UiKeys.GITHUB_TOKEN))
+                        login.login(state.text(UiKeys.GITHUB_TOKEN))
                     }
                     .padding(horizontal = 16.dp, vertical = 9.dp),
             ) {
