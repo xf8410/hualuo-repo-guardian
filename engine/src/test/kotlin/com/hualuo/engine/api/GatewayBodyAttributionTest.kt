@@ -53,15 +53,15 @@ class GatewayBodyAttributionTest {
     }
 
     @Test
-    fun inStreamErrorBlockNeverLeaksSecretLookingText() {
+    fun inStreamErrorBlockCarriesSecretLookingTextVerbatim() {
+        // 零脱敏纪律：对方原话一字不改——api_key 原样进消息
         val parser = OpenAiSseParser {}
         val line = "data: {\"error\":{\"message\":\"Invalid credentials api_key=sk-abcdef1234567890abcdef\"}}"
         parser.onLine(line)
         val error = parser.streamError
         assertTrue("普通错误仍是 Api", error is GenerationError.Api)
         val message = (error as GenerationError.Api).message
-        assertFalse("密钥原串绝不许出现在给人看的消息里", message.contains("abcdef1234567890"))
-        assertTrue("打码标记要在", message.contains("****"))
+        assertTrue("密钥原文必须在场（零脱敏）", message.contains("sk-abcdef1234567890abcdef"))
     }
 
     @Test

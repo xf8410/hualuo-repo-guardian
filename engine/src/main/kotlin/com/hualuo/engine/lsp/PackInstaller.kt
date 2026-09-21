@@ -145,7 +145,7 @@ data class InstallReport(
     val downloaded: Boolean,
 )
 
-/** 安装失败的原因。消息一律中文、带出路；里头的用户可控文本过脱敏。 */
+/** 安装失败的原因。消息一律中文、带出路；里头的用户可控文本控制字符可视化。 */
 class PackInstallReject(reason: String) : Exception(reason)
 
 /**

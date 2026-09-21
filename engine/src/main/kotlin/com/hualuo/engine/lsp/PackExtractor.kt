@@ -22,7 +22,7 @@ import java.util.zip.ZipInputStream
  *  3) 解完必须点名验入口（[LanguagePack.serverBinary] 指的那个文件）：不存在、不是文件、
  *     或者 0 字节，整包作废。光「解成功」不算数，包里有真东西才算。
  *
- * 失败一律抛 [PackInstallReject]（消息中文带原因与出路，用户可控文本过脱敏），
+ * 失败一律抛 [PackInstallReject]（消息中文带原因与出路，用户可控文本控制字符可视化），
  * 并把暂存目录整个清掉——磁盘上不留半截。
  *
  * 修记（推 CI 之前自查逮住的两类错，都已修）：

@@ -14,9 +14,9 @@ import com.hualuo.engine.http.FailureClass
  * 原版四问题（都在这版修掉）：
  *  1. 提示语全是英文，而这个 App 的界面是中文 —— 直接搬过来你会看到一句英文报错。
  *  2. `SseParse` 把 `rawLine` 与 `cause` 全丢了，只剩一句 "Failed to parse server response."：
- *     对方返的不合规矩时**一点线索都没有**，只能干瞪眼。现在带截断脱敏后的原文片段。
+ *     对方返的不合规矩时**一点线索都没有**，只能干瞪眼。现在带原文片段（超长带账截断）。
  *  3. `Unknown` 直接 `cause.localizedMessage` 进界面：异常文本里可能带**完整 URL**
- *     （有些网关把密钥写在查询串上），等于把密钥打到屏幕上。现在一律先脱敏。
+ *     （有些网关把密钥写在查询串上）——零脱敏纪律：原文照显示，一字不改。
  *  4. 403 与 404 都掉进 "Network error (xxx)"：404 十有八九是 base URL 或模型名写错，
  *     403 常是额度/未开通，这两条必须指名道姓，否则人只会去重启 App。
  */
@@ -35,7 +35,7 @@ sealed class GenerationError {
      */
     data class Transport(val failure: FailureClass, val detail: String) : GenerationError()
 
-    /** SSE 某一行读不懂。[rawLine] 会在给人看的那句里截断脱敏后带出来。 */
+    /** SSE 某一行读不懂。[rawLine] 会在给人看的那句里带出来（超长带账截断）。 */
     data class SseParse(val rawLine: String, val cause: String) : GenerationError()
 
     /**
@@ -87,7 +87,7 @@ sealed class GenerationError {
     fun userMessage(): String = when (this) {
         is Network -> when (statusCode) {
             400 -> "请求被对方拒了（400）：${brief(message)}。多半是模型名或参数不合它家的规矩"
-            401 -> "鉴权失败（401）：提供商里的密钥不对或已失效，去「提供商」里重填这一家"
+            401 -> "鉴权失败（401）：提供商里的密钥不对或已失效，去「提供商」里重填这一家。对方原话：${brief(message)}"
             403 -> "对方不许访问（403）：额度用尽、模型未开通，或这个密钥没权限：${brief(message)}"
             404 -> "找不到这个地址或模型（404）：先核对「提供商」里的 base URL 末尾版本段与模型名：${brief(message)}"
             408, 429 -> "对方忙或限流（$statusCode）：等一会儿再发，或把并发降下来"
@@ -119,13 +119,13 @@ sealed class GenerationError {
             FailureClass.Stalled -> "连接卡住了：${brief(detail)}。要是内容已经出过一部分，别整条盲重发（会重复内容、再花一遍钱）"
             // 网关 502/400 包着 "Your input exceeds the context window" 时走的是这里：
             // 出路固定是「删历史/开新会话」，绝不许说成"稍后重试"——重发同一份只会再错一次。
-            // detail 是对方错误体原文（已打码），留它当证据，人对得上是哪段内容撑爆的。
+            // detail 是对方错误体原文，留它当证据，人对得上是哪段内容撑爆的。
             FailureClass.ContextOverflow ->
                 if (detail.isBlank()) "上下文超限：删掉部分历史或开新会话再发；重发同一份内容只会再错一次"
                 else "上下文超限：删掉部分历史或开新会话再发，别重发同一份。对方原话：「${brief(detail)}」"
             else -> "网络出错（$failure）：${brief(detail)}"
         }
-        // 修：不再只给一句"解析失败"，带上截断脱敏后的原文片段
+        // 修：不再只给一句"解析失败"，带上原文片段（超长带账截断）
         is SseParse -> "对方返回的内容读不懂（$cause）。看到的开头：「${brief(rawLine)}」——" +
             "通常是中间有代理改写了响应，或这家不完全是 OpenAI 兼容协议"
         is IncompleteStream -> buildString {
@@ -149,8 +149,7 @@ sealed class GenerationError {
         is Embedding -> "向量计算失败（$modelId）：${brief(message)}"
         is Configuration -> "设置还没配好：$message"
         is RequestFormat -> "请求在发出去之前就被拦下（$provider）：$details"
-        // 修：异常原文一律先脱敏再截断，防把带密钥的 URL 打到屏幕上
-        is Unknown -> "没预料到的错：${brief(maskSecrets(cause.localizedMessage ?: cause.toString()))}"
+        is Unknown -> "没预料到的错：${brief(cause.localizedMessage ?: cause.toString())}"
         Cancelled -> "你已经按了停止"
         Timeout -> "等回应超时了：对方可能挂了或网络不通，稍后重试"
     }
@@ -160,53 +159,17 @@ sealed class GenerationError {
         private const val EXCERPT_LIMIT = 220
 
         /**
-         * 折行，按**原文**长度截断（超长必带"已截断"标记），最后一步才打码。
+         * 折行，按**原文**长度截断（超长必带"已截断"标记）。
          *
-         * 顺序不能反：先打码的话，一整段 900 字符的垃圾会被长串规则折叠成
-         * 十几字符，长度判断被折叠结果骗过去，"已截断"的承诺就凭空消失了 ——
-         * 这是 CI 用 longProviderMessagesGetFoldedAndTruncated 抓出来的真顺序错。
-         * 截断放前面还省工作量：打码只看得到 220 字符，不用扫一整页 HTML。
+         * 零脱敏纪律（ULTIMATE_RULE ZERO）：错误原文一字不改地透传——
+         * 密钥、令牌、URL 全按实际内容显示。截断只为一整页 HTML 不刷屏，
+         * 且带账明说截了多少，不是隐藏。
          */
         private fun brief(text: String): String {
             val flat = text.replace('\n', ' ').replace('\r', ' ').trim()
-            val clipped = if (flat.length <= EXCERPT_LIMIT) flat
-            else flat.take(EXCERPT_LIMIT) + "…（已截断）"
-            return maskSecrets(clipped)
+            return if (flat.length <= EXCERPT_LIMIT) flat
+            else flat.take(EXCERPT_LIMIT) + "…（已截断，原文 ${flat.length} 字符）"
         }
     }
 }
 
-/**
- * 把疑似密钥的东西打码：只留首尾各 2 位。
- *
- * 为什么要：报错文本会把 URL、请求头、对方原话一起带进来，而有些网关习惯把密钥放在
- * 查询串或 `Bearer xxx` 里。这条是"密钥绝不外泄"的最后一道 —— 日志、toast、异常消息
- * 全部先过这里。
- *
- * 规则保守：只动**长串**（20 位以上的字母数字/`-_` 组合）、`sk-` 开头的串，
- * 以及 `key=xxx` / `Authorization: Bearer xxx` 这类写法里的值。
- * 认证方案名（Bearer/Basic）会被原样留下 —— 它是协议词汇不是密钥，第一版没设防这点，
- * 把 `Bearer` 当成值打成了星号，真正的密钥反而留在后面（CI 抓到才修的）。
- * 正常中文句子、URL 主机名、模型名（都短）不会被啃掉。
- */
-fun maskSecrets(text: String): String {
-    if (text.isEmpty()) return text
-    var out = text
-    out = KEY_LABELED.replace(out) { match ->
-        match.groupValues[1] + match.groupValues[2] + match.groupValues[3] + maskValue(match.groupValues[4])
-    }
-    out = SK_PREFixed.replace(out) { maskValue(it.value) }
-    out = LONG_TOKEN.replace(out) { maskValue(it.value) }
-    return out
-}
-
-/** 首尾各留 2 位，中间一律星号；太短的不打（打了也没意义，还会把正常词啃掉）。 */
-private fun maskValue(value: String): String {
-    if (value.length <= 8) return "****"
-    return value.take(2) + "*".repeat(minOf(value.length - 4, 12)) + value.takeLast(2)
-}
-
-/** 标签组 3 先吃掉 Bearer/Basic 这类方案名（不是密钥），组 4 才是真正的值。 */
-private val KEY_LABELED = Regex("(?i)(authorization|api[_-]?key|token|key)(\\s*[:=]\\s*)(bearer\\s+|basic\\s+)?(\\S+)")
-private val SK_PREFixed = Regex("(?i)\\bsk-[A-Za-z0-9_\\-]{6,}")
-private val LONG_TOKEN = Regex("[A-Za-z0-9_\\-]{20,}")
