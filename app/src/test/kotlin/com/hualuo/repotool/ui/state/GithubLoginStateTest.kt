@@ -2,6 +2,7 @@ package com.hualuo.repotool.ui.state
 
 import com.hualuo.engine.github.GitHubAuthOutcome
 import com.hualuo.engine.github.GitHubHttpResult
+import com.hualuo.engine.github.GitHubIdentity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,6 +16,10 @@ import org.junit.Test
  *    手里是新钥匙」的撒谎态；
  *  - 退出登录只清登录态不动令牌；导入备份后从设置重读。
  * 走注入的假验证器与同步执行（runAsync={it()}），绝不碰真网。
+ *
+ * 修记（run 35660491254 的编译红）：本文件里 GitHubIdentity 第三个具名参数最初写成了
+ * `declared`，实际叫 `scopesDeclared`（engine 件里的字段名）——编译段逮住，一处改正。
+ * 教训：对我们自己定义的数据类，具名参数名也要读一遍声明再写，别凭印象拼。
  */
 class GithubLoginStateTest {
 
@@ -29,7 +34,7 @@ class GithubLoginStateTest {
     private class FakeAuth : (String) -> GitHubAuthOutcome {
         val tokens = ArrayList<String>()
         var next: GitHubAuthOutcome = GitHubAuthOutcome.Ok(
-            com.hualuo.engine.github.GitHubIdentity("xf8410", listOf("repo", "workflow"), true),
+            GitHubIdentity("xf8410", listOf("repo", "workflow"), scopesDeclared = true),
         )
 
         override fun invoke(token: String): GitHubAuthOutcome {
@@ -38,7 +43,7 @@ class GithubLoginStateTest {
         }
     }
 
-    /** 假验证器对象：把 (String)->Outcome 缝进 GitHubAuthClient 的 fetch 位。 */
+    /** 假验证器：把 (String) 到 Outcome 的函数缝进 GitHubAuthClient 的 fetch 位。 */
     private fun authClientOf(fake: FakeAuth): com.hualuo.engine.github.GitHubAuthClient =
         com.hualuo.engine.github.GitHubAuthClient { _, token, _, _ ->
             when (val outcome = fake.invoke(token.orEmpty())) {
@@ -161,7 +166,7 @@ class GithubLoginStateTest {
     fun scopesNotDeclaredIsVoicedHonestly() {
         val (state, fake) = stateOf()
         fake.next = GitHubAuthOutcome.Ok(
-            com.hualuo.engine.github.GitHubIdentity("xf8410", emptyList(), declared = false),
+            GitHubIdentity("xf8410", emptyList(), scopesDeclared = false),
         )
         state.login("tok")
 
