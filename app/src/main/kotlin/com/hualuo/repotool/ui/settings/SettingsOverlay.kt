@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -76,6 +78,9 @@ import com.hualuo.repotool.ui.theme.SubInk
  *
  * %VERSION% 占位在渲染时替换为注入的版本串（单源链的最后一环）。
  *
+ * 系统栏让位（2026-09-22 修，同一类距离修正）：设置层盖满整壳（含状态栏区），
+ * 头部行吃状态栏、滚到底的内容吃导航栏——底色照旧铺满，只让内容落在系统栏之内。
+ *
  * 家规提醒：单选圆环的 Modifier.size 之前缺 layout.size 的 import，红在 app 编译段
  * （run 34969369167 抓到）。engine 一直先红导致这颗雷压了十几轮没人看见 —— 谁改了布局
  * 调用就当场把 import 带上，别赌"反正后面模块编译不到"。
@@ -91,6 +96,7 @@ fun SettingsOverlay(state: AppUiState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .padding(start = 14.dp, end = 14.dp, top = 13.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -140,6 +146,7 @@ fun SettingsOverlay(state: AppUiState) {
                 modifier = Modifier
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
                     .padding(horizontal = 14.dp)
                     .padding(bottom = 26.dp),
             ) {
@@ -240,6 +247,7 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
             .padding(horizontal = 14.dp)
             .padding(bottom = 26.dp),
     ) {

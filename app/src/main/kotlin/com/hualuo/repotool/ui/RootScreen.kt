@@ -19,8 +19,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -118,6 +121,21 @@ private val BusyBarAlpha = 0.55f
  *
  * 写仓库确认卡（0.7.0 刀③）画在**最上层**：写仓库是全 App 最重的一个动作，
  * 不许被设置层/弹层盖住——模型提议改码时它必须第一个被看见，点头才写。
+ *
+ * 系统栏让位（2026-09-22 修，用户手机实报「菜单点不到、底签太靠下」；只改距离）：
+ * targetSdk 35 在 Android 15+ 被系统强制 edge-to-edge，内容会直接顶进状态栏、
+ * 沉进手势导航条——主因是入口没做让位。修法对齐旧 Agora 的做法（实读其源码）：
+ * 入口 enableEdgeToEdge（透明系统栏），这里三处让位——
+ *  1) 顶栏吃状态栏（statusBarsPadding）：菜单钮不再压进状态栏、点得到；
+ *  2) 底栏吃导航栏（navigationBarsPadding）：五签落在手势条之上，不被裁；
+ *  3) 整列吃键盘（imePadding）：键盘弹起时输入区与底栏一起抬起，不让键盘盖住
+ *     （旧 Agora 底栏是 navigationBarsPadding + imePadding 同款）。
+ * 抽屉/设置层/弹层各自在内部让位（见各自文件），版式与配色一字不动。
+ *
+ * 修记（run 35610835722 的词法闸门红，改这条时别再犯）：本文件重写时曾把字符串模板里的
+ * **正常嵌套引号**误写成转义形式（反斜杠夹引号），SourceHygieneTest 逮出 15 处连锁
+ * 「引号被吃」。教训：`${...}` 模板内部是正常代码词法，嵌套字符串就用普通双引号，
+ * 不许带反斜杠——这是本仓第二次吃同款红（第一次是 PR #46 的 AppUiState）。
  *
  * @param versionLabel 版本串由入口从 BuildConfig 注入（单源=version.properties），界面不写死。
  */
@@ -306,7 +324,12 @@ fun HualuoApp(versionLabel: String) {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Bg) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            // 整列吃键盘让位：键盘弹起时输入区与底栏一起抬起（系统栏让位三处之一）
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding(),
+            ) {
                 TopBar(state)
                 // 长活进度行（备份导出/导入/兑换、文件投递）：内核持有，Activity 重建不丢
                 ProgressLine(kernel.backupProgress)
@@ -385,10 +408,12 @@ private fun ProgressLine(text: String?) {
 
 @Composable
 private fun TopBar(state: AppUiState) {
+    // 顶栏吃状态栏让位（系统栏让位三处之一）：菜单钮不再压进状态栏，点得到
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Bg)
+            .statusBarsPadding()
             .padding(start = 14.dp, end = 14.dp, top = 13.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -431,10 +456,13 @@ private fun TopBar(state: AppUiState) {
 
 @Composable
 private fun BottomNav(state: AppUiState) {
+    // 底栏吃导航栏让位（系统栏让位三处之一）：五签落在手势条之上，不被裁。
+    // 底色先铺、再让位——手势条那一条也跟着是 CardBg，看起来是底栏的一部分。
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(CardBg)
+            .navigationBarsPadding()
             .padding(top = 7.dp, bottom = 11.dp),
     ) {
         NavTab.entries.forEach { tab ->

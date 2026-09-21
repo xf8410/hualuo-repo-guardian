@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -46,6 +48,9 @@ import com.hualuo.repotool.ui.theme.SubInk
  * 会话搜索 / 新建 / 管理、多选、删除（带确认框）/ 底部四快捷行直达设置对应分组。
  * 会话接线后：列表来自真库（AppUiState.convs 由 SessionStore 喂），点行走 openConversation
  * 真切库——读不出就出声，绝不摆空壳（治旧 Agora「白屏/多进几次才出来」那一类）。
+ *
+ * 系统栏让位（2026-09-22 修，同一类距离修正）：面板吃状态栏、底部行为条吃导航栏，
+ * 边框与底色照旧铺满——只动内容让位的距离，不改版式。
  */
 @Composable
 fun DrawerOverlay(state: AppUiState) {
@@ -61,6 +66,8 @@ fun DrawerOverlay(state: AppUiState) {
                 .fillMaxHeight()
                 .width(284.dp)
                 .background(CardBg)
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = 13.dp, end = 13.dp, top = 16.dp, bottom = 80.dp),
         ) {
@@ -132,6 +139,7 @@ fun DrawerOverlay(state: AppUiState) {
                     .align(Alignment.BottomStart)
                     .width(284.dp)
                     .background(CardBg)
+                    .navigationBarsPadding()
                     .border(1.dp, Hairline, RoundedCornerShape(topStart = 0.dp))
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,

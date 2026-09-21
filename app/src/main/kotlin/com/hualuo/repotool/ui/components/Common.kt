@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -215,7 +217,12 @@ fun SliderRow(label: String, min: Float, max: Float, value: Float, onValue: (Flo
     }
 }
 
-/** 底部弹层骨架：遮罩 + 从输入区升起的白卡（原型 .sheet：max-height 70%，grab 条）。 */
+/**
+ * 底部弹层骨架：遮罩 + 从输入区升起的白卡（原型 .sheet：max-height 70%，grab 条）。
+ *
+ * 系统栏让位（2026-09-22 修，同一类距离修正）：卡片底吃导航栏、键盘弹起时整卡抬起
+ * （弹层里也有输入框，不让键盘盖住内容）；卡片自己的圆角与底色照旧铺满。
+ */
 @Composable
 fun SheetScaffold(
     title: String,
@@ -235,6 +242,8 @@ fun SheetScaffold(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                 .background(CardBg)
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
         ) {
             Box(
