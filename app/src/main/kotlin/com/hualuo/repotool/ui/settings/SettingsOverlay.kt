@@ -81,6 +81,11 @@ import com.hualuo.repotool.ui.theme.SubInk
  * 系统栏让位（2026-09-22 修，同一类距离修正）：设置层盖满整壳（含状态栏区），
  * 头部行吃状态栏、滚到底的内容吃导航栏——底色照旧铺满，只让内容落在系统栏之内。
  *
+ * **输入框可见化 + 登录卡（2026-09-22，用户实报「token 登录的输入框呢」）**：
+ * 原先 PersistedText 渲染成「左标题、右灰字」的行，看起来像只读文字——用户找不到能点的输入框。
+ * 现在真设置文本一律渲染成**带边框浅底的可见输入框**（标签在上、框在下），
+ * 秘书级设置 `SubField.GithubLogin` 走登录卡（令牌输入 + 登录验证 + 登录态 + 退出）。
+ *
  * 家规提醒：单选圆环的 Modifier.size 之前缺 layout.size 的 import，红在 app 编译段
  * （run 34969369167 抓到）。engine 一直先红导致这颗雷压了十几轮没人看见 —— 谁改了布局
  * 调用就当场把 import 带上，别赌"反正后面模块编译不到"。
@@ -302,22 +307,31 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                         }
                     }
                 }
-                // 真设置文本框：值走 text/setText 通道。编辑即上屏，落盘由界面按
-                // settingsRevision 去抖攒批——打字期间绝一个字写一次盘。
+                // 真设置文本框（2026-09-22 起是**可见输入框**）：标签在上、带边框浅底的框在下，
+                // 点进去就能打字——用户实报「输入框呢」的正面回答。
+                // 值走 text/setText 通道：编辑即上屏，落盘按 settingsRevision 去抖攒批。
                 // secret 只打点显示；「密钥明文进盘」是 D-10 的总决定，不归这里管。
-                is SubField.PersistedText -> FRow {
-                    Text(f.label, fontSize = 14.sp, color = Ink)
-                    Spacer(Modifier.width(10.dp))
-                    Box(modifier = Modifier.weight(1f)) {
+                is SubField.PersistedText -> Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 9.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(CardBg)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
+                    Text(f.label, fontSize = 13.sp, color = SubInk)
+                    Spacer(Modifier.height(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Bg)
+                            .border(1.dp, Hairline, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                    ) {
                         val v = state.text(f.key)
                         if (v.isEmpty() && f.placeholder.isNotEmpty()) {
-                            Text(
-                                f.placeholder,
-                                fontSize = 13.sp,
-                                color = SubInk,
-                                textAlign = TextAlign.End,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            Text(f.placeholder, fontSize = 13.sp, color = SubInk)
                         }
                         BasicTextField(
                             value = v,
@@ -328,13 +342,15 @@ private fun SubPageView(state: AppUiState, key: String, modifier: Modifier = Mod
                             textStyle = TextStyle(
                                 fontSize = 13.sp,
                                 color = Ink,
-                                textAlign = TextAlign.End,
                                 fontFamily = if (f.secret) FontFamily.Monospace else FontFamily.Default,
                             ),
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
+                // GitHub 登录卡：令牌输入 + 登录验证 + 登录态（已登录为谁/权限）+ 退出
+                // （2026-09-22 补，用户实报「token 登录的输入框呢」；组件本体在 GithubLoginCard.kt）
+                SubField.GithubLogin -> GithubLoginCard(state)
                 is SubField.Seg -> Column(Modifier.padding(horizontal = 6.dp)) {
                     Text(f.label, fontSize = 12.5.sp, color = SubInk, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                     val sel = segs[f.label] ?: f.sel
