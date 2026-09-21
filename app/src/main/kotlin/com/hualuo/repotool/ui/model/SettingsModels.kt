@@ -53,6 +53,9 @@ sealed class SubField {
      * 真设置文本框：值走 AppUiState 的 text/setText 按键名通道。
      * 编辑即生效、落盘由界面按修订号攒着去抖——输入框不许一个字写一次盘。
      * secret=true 只影响屏显（打点显示）；盘上是否明文由 D-10 的总决定管，不归这个字段管。
+     *
+     * 渲染（2026-09-22 起）：带边框浅底的可见输入框——「输入框呢」这类实报的正面回答，
+     * 可改字段不再长得像一行只读文字。
      */
     data class PersistedText(
         val label: String,
@@ -60,6 +63,14 @@ sealed class SubField {
         val placeholder: String = "",
         val secret: Boolean = false,
     ) : SubField()
+
+    /**
+     * GitHub 登录卡（2026-09-22 补，用户实报「token 登录的输入框呢」）：
+     * 可见的令牌输入框（打点显示）+「登录」验证钮 + 登录状态与权限清单 + 退出登录。
+     * 为什么单开一个字段类型：这一块是多态交互（验证跑后台线程，状态分未登录/验证中/已登录），
+     * 不是一行文本能表达的；渲染进 SettingsOverlay 的分支，组件本体在 GithubLoginCard.kt。
+     */
+    object GithubLogin : SubField()
 
     data class Seg(val label: String, val options: List<String>, val sel: Int) : SubField()
     data class Input(val label: String, val placeholder: String = "") : SubField()
