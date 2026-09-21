@@ -1,5 +1,3 @@
-package com.hualuo.repotool.ui.data
-
 import com.hualuo.repotool.ui.model.IconKey
 import com.hualuo.repotool.ui.model.SettingsItem
 import com.hualuo.repotool.ui.model.SettingsSection
@@ -108,20 +106,16 @@ val RealSubPages: Map<String, SubPage> = mapOf(
             ),
         ),
     ),
-    // 覆盖演示表「GitHub 工作台」页：仓库CI 页/检查更新/CI 提醒全读这几格。
+    // 覆盖演示表「GitHub 工作台」页：登录卡（2026-09-22 补）+ 仓库 + CI 提醒。
+    // 登录卡管令牌那格（验证、登录态、权限、退出）；仓库格管默认仓；CI 提醒管后台轮询。
     "github" to SubPage(
         "GitHub 工作台",
         listOf(
+            SubField.GithubLogin,
             SubField.PersistedText(
                 "仓库",
                 UiKeys.GITHUB_REPO,
                 "owner/name，粘整条链接也认",
-            ),
-            SubField.PersistedText(
-                "访问令牌",
-                UiKeys.GITHUB_TOKEN,
-                "公开仓库可留空；私有仓库要填",
-                secret = true,
             ),
             SubField.PersistedSwitch(
                 "CI 提醒（后台轮询，红绿出通知）",
@@ -129,8 +123,13 @@ val RealSubPages: Map<String, SubPage> = mapOf(
                 true,
             ),
             SubField.Note(
-                "仓库CI 页拉 workflow runs、「检查更新」对最新发布版，读的都是上面两格。" +
-                    "令牌只进请求头，不进任何报错、日志与界面文本。",
+                "上面登录卡的令牌就是全 App 用的那把：仓库CI 页拉 workflow runs、「检查更新」对最新" +
+                    "发布版、模型工具族看仓读文件，用的都是它。令牌只进请求头，不进任何报错、日志与界面文本。",
+            ),
+            SubField.Note(
+                "没令牌？GitHub 网页里 Settings、Developer settings、Personal access tokens 生成一枚：" +
+                    "classic 令牌勾 repo 与 workflow 就够用；细粒度令牌要给目标仓的 Contents 读权限。" +
+                    "粘进上面那格点「登录」验证一次即可。",
             ),
             SubField.Note(
                 "CI 提醒：每 15 分钟在后台拍一次 GitHub，有新 run 出结果就发通知栏（红绿都报）。" +
