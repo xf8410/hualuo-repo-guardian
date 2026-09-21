@@ -6,8 +6,19 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** 一次 GitHub HTTP 的最小回执：状态码 + 有界读进的 body + 是否被截断。status=0 = 连都没连上。 */
-data class GitHubHttpResult(val status: Int, val body: String, val truncated: Boolean = false)
+/**
+ * 一次 GitHub HTTP 的最小回执：状态码 + 有界读进的 body + 是否被截断。status=0 = 连都没连上。
+ *
+ * [scopes] 是 X-OAuth-Scopes 响应头的原文（登录验证用：这枚令牌实际拥有的权限清单）。
+ * 默认空串 = 这次响应没有这份声明（细粒度令牌通常就没有）——**空不是失败**，
+ * 调用方别把「没声明」当成「没权限」。
+ */
+data class GitHubHttpResult(
+    val status: Int,
+    val body: String,
+    val truncated: Boolean = false,
+    val scopes: String = "",
+)
 
 /** 一条 workflow run 的界面字段（就展示这些，别的字段不进内存）。 */
 data class GitHubRun(

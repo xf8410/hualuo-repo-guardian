@@ -1,11 +1,8 @@
 package com.hualuo.engine.github
 
-import java.net.URLEncoder
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 
 /** 一处代码命中：文件名 + 仓库内路径（点开就是文件预览）。 */
@@ -53,7 +50,7 @@ class GitHubSearchClient(
             )
         }
         val capped = limit.coerceIn(1, 50)
-        val encoded = URLEncoder.encode("$query repo:$full", "UTF-8").replace("+", "%20")
+        val encoded = java.net.URLEncoder.encode("$query repo:$full", "UTF-8").replace("+", "%20")
         val result = fetch("$GITHUB_API_ROOT/search/code?q=$encoded&per_page=$capped", token, null, GITHUB_MAX_BODY_CHARS)
         if (result.status == 403) {
             return GitHubCodeSearchResult(
@@ -70,8 +67,8 @@ class GitHubSearchClient(
         val root = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject
             ?: return GitHubCodeSearchResult(emptyList(), 0, false, 0, "GitHub 回的内容读不懂（200 但不是搜索结果）")
         val total = (root["total_count"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
-        val incomplete = (root["incomplete_results"] as? JsonPrimitive)?.booleanOrNull ?: false
-        val items = root["items"] as? JsonArray
+        val incomplete = (root["incomplete_results"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: false
+        val items = root["items"] as? kotlinx.serialization.json.JsonArray
             ?: return GitHubCodeSearchResult(emptyList(), total, incomplete, 0, "GitHub 回的形状变了（没找到 items）")
         val hits = ArrayList<GitHubCodeHit>()
         var bad = 0

@@ -27,7 +27,7 @@ import kotlin.reflect.KProperty
 data class CourierPick(
     /** 屏上显示用的短标签（选文件时是系统选择器给的路径尾段，收集真名在投递时做）。 */
     val label: String,
-    /** content URI 的字符串形状。状态层不认识安卓的 Uri 类，转回去是根界面那层的事。 */
+    /** content URI 的字符串形式。状态层不认识安卓的 Uri 类，转回去是根界面那层的事。 */
     val uri: String,
     /** true = 一棵目录树（OpenDocumentTree 的结果），投递时递归收集。 */
     val isTree: Boolean,
@@ -48,6 +48,8 @@ data class CourierPick(
  *    store 为 null（纯 JVM 测试、或会话库没建成）时一切照演示版走，行为不变。
  *  - **仓库CI（GitHub 只读）**：runs 与最新发布版现场拉，失败/坏条目出声不冒充；
  *    仓库与令牌在设置「GitHub 工作台」里配，令牌只进请求头。
+ *  - **GitHub 登录（2026-09-22 补）**：整体住 [githubLogin]（[GithubLoginState]，进程级）；
+ *    拿令牌验证 /user 并记登录态与权限；令牌一改登录当场作废（防撒谎态）。
  *  - **仓库工作台（浏览 + 改码）**：整体住 [repo]（[RepoWorkbenchState] 状态舱，
  *    999 行红线拆出来的：清单/浏览/分支/提交历史/文件预览与改码提交）。
  *  - **工具页真电（网页搜索）**：免费档 DuckDuckGo（引擎件 WebSearchClient，fetch 缝隙
@@ -146,13 +148,34 @@ class AppUiState(
     fun text(key: String, default: String = ""): String =
         textOverrides[key] ?: persist.load(key) ?: default
 
-    /** 改一个真文本：界面立刻更新、内存记一笔（不碰盘），修订号推进等去抖落盘。 */
+    /**
+     * 改一个真文本：界面立刻更新、内存记一笔（不碰盘），修订号推进等去抖落盘。
+     *
+     * 特殊关照：改的是 github.token 时，把 [githubLogin] 里那次验证**当场作废**——
+     * 防「屏上还写着已登录为旧身份、手里其实已经换了新钥匙」的撒谎态
+     * （用户实报这条时点名的关切；作废是幂等的，没登录过就什么都不做）。
+     */
     fun setText(key: String, value: String) {
         if (text(key) == value) return
         textOverrides[key] = value
         persist.save(key, value)
         settingsRevision += 1
+        if (key == UiKeys.GITHUB_TOKEN) {
+            githubLogin.invalidate()
+        }
     }
+
+    // ── GitHub 登录（2026-09-22 补） ────────────────────────────────────────
+
+    /**
+     * GitHub 登录状态舱：令牌验证（/user）、登录名与权限清单、退出登录。
+     * 挂进程（本状态层由应用单例持有），转屏/切出不丢。通知出口与修订号与其它件同源。
+     */
+    val githubLogin = GithubLoginState(
+        persist = persist,
+        toast = { msg -> toast(msg) },
+        bumpRevision = { settingsRevision += 1 },
+    )
 
     // ── 回合流真运行层 ──────────────────────────────────────────────────────
 
@@ -437,6 +460,9 @@ class AppUiState(
      *
      * 属性解析必须喂 StringReader：Properties.load(InputStream) 按 ISO-8859-1 解码，
      * 中文值全会变乱码——CI 测试段抓过（run 35099409305），别改回字节流。
+     *
+     * 导入完成后 [githubLogin] 从设置里重读登录态（备份里带就接上，没带就回到未登录）——
+     * 绝不拿旧内存值冒充导入结果。
      */
     fun applyImportedBackup(backup: BackupGateway.ImportedBackup): String {
         if (!backup.formatOk) {
@@ -462,6 +488,7 @@ class AppUiState(
                 applied += 1
             }
         }
+        githubLogin.reloadFromSettings()
         settingsRevision += 1
         val issues = persistenceMessages()
         val flushFailure = flushPersistence()
