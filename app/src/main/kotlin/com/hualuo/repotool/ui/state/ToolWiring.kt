@@ -34,6 +34,7 @@ fun buildGithubToolRegistry(
     writeConfirmer: WriteConfirmer? = null,
     sandboxConfirmer: SandboxConfirmer? = null,
     sandboxRootDir: File? = null,
+    prConfirmer: com.hualuo.engine.toolcalls.PrConfirmer? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -45,6 +46,15 @@ fun buildGithubToolRegistry(
             defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
             repoClient = com.hualuo.engine.github.GitHubRepoClient(),
             confirmer = writeConfirmer,
+        )
+    }
+    if (prConfirmer != null) {
+        com.hualuo.engine.toolcalls.GitHubPrTool.register(
+            registry = registry,
+            loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
+            defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
+            prClient = com.hualuo.engine.github.GitHubPrClient(),
+            confirmer = prConfirmer,
         )
     }
     if (sandboxConfirmer != null && sandboxRootDir != null) {
