@@ -13,6 +13,7 @@ import com.hualuo.engine.api.UrlConnTransport
 import com.hualuo.engine.api.WireTransport
 import com.hualuo.engine.generation.GenerationSlot
 import com.hualuo.engine.generation.IdleWatchdog
+import com.hualuo.engine.settings.CustomModel
 import com.hualuo.engine.settings.ModelSettings
 import com.hualuo.engine.settings.ModelSettingsCodec
 import com.hualuo.engine.settings.ProviderSettings
@@ -24,6 +25,7 @@ data class AvailableModel(
     val modelName: String,
     val alias: String?,
     val enabled: Boolean,
+    val custom: Boolean = false,
 )
 
 class ModelSettingsState(
@@ -74,6 +76,45 @@ class ModelSettingsState(
                 availableModels = it.availableModels - id,
                 enabledModels = it.enabledModels.filterNot { model -> ModelRef.parse(model).providerId == id }.toSet(),
                 aliases = it.aliases.filterKeys { ModelRef.parse(it).providerId != id },
+                customModels = it.customModels.filterNot { model -> model.providerId == id },
+            )
+        }
+        return null
+    }
+
+    /** Agora 式自定义模型：名字 + 模型 id + 挂靠提供商，请求走该提供商的 base 与密钥。 */
+    fun addCustomModel(providerId: String, modelName: String, alias: String): String? {
+        val provider = settings.provider(providerId.trim()) ?: return "先选一家已有的提供商"
+        val name = modelName.trim()
+        if (name.isEmpty()) return "模型 id 不能为空"
+        if (name.contains(':')) return "模型 id 不能含冒号"
+        if (name.length > 128) return "模型 id 太长"
+        val cleanAlias = alias.trim()
+        if (cleanAlias.length > 64) return "别名太长"
+        val id = "${provider.id}:$name"
+        if (settings.customModels.any { it.id == id }) return "这个模型已经加过了"
+        update { current ->
+            val merged = (current.availableModels[provider.id].orEmpty() + id).distinct()
+            current.copy(
+                customModels = current.customModels + CustomModel(id, provider.id, name, cleanAlias),
+                availableModels = current.availableModels + (provider.id to merged),
+                enabledModels = current.enabledModels + id,
+                aliases = if (cleanAlias.isBlank()) current.aliases else current.aliases + (id to cleanAlias),
+            )
+        }
+        return null
+    }
+
+    fun deleteCustomModel(modelId: String): String? {
+        val target = settings.customModels.firstOrNull { it.id == modelId } ?: return "这个自定义模型已经不在了"
+        update { current ->
+            current.copy(
+                customModels = current.customModels.filterNot { it.id == modelId },
+                availableModels = current.availableModels.mapValues { (providerId, rows) ->
+                    if (providerId == target.providerId) rows.filterNot { it == modelId } else rows
+                }.filterValues { it.isNotEmpty() },
+                enabledModels = current.enabledModels - modelId,
+                aliases = current.aliases - modelId,
             )
         }
         return null
@@ -92,10 +133,11 @@ class ModelSettingsState(
     }
 
     fun availableModels(): List<AvailableModel> = buildList {
+        val customIds = settings.customModels.map { it.id }.toSet()
         settings.availableModels.toSortedMap().forEach { (providerId, ids) ->
             ids.sorted().forEach { id ->
                 val parsed = ModelRef.parse(id)
-                add(AvailableModel(id, providerId, displayProviderName(providerId), parsed.model, settings.aliases[id], id in settings.enabledModels))
+                add(AvailableModel(id, providerId, displayProviderName(providerId), parsed.model, settings.aliases[id], id in settings.enabledModels, id in customIds))
             }
         }
     }.sortedWith(compareBy({ it.providerName }, { it.modelName }))
@@ -162,7 +204,8 @@ class ModelSettingsState(
             if (error != null) errors = errors + (providerId to error.userMessage())
             else if (listing.models.isEmpty()) errors = errors + (providerId to "端点回话正常，但没有认出任何模型名")
             else {
-                val prefixed = listing.models.map { "$providerId:${it.removePrefix("models/")}" }.distinct()
+                val customIds = settings.customModels.filter { it.providerId == providerId }.map { it.id }
+                val prefixed = (listing.models.map { "$providerId:${it.removePrefix("models/")}" } + customIds).distinct()
                 update { current -> current.copy(availableModels = current.availableModels + (providerId to prefixed)) }
             }
             drainQueue()

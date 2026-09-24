@@ -12,8 +12,11 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +41,9 @@ fun ModelSettingsPanel(state: AppUiState) {
     val current = state.currentModel
     val currentLabel = models.settings.aliases[current] ?: ModelRef.parse(current).model.ifBlank { "未选择" }
     val currentProvider = ModelRef.parse(current).providerId
+    var customProviderId by remember(models.settings.providers) { mutableStateOf(models.settings.activeProviderId) }
+    var customModelName by remember { mutableStateOf("") }
+    var customAlias by remember { mutableStateOf("") }
     Column(modifier = Modifier.fillMaxWidth()) {
         SectionLabel("默认模型")
         Row(
@@ -50,13 +56,29 @@ fun ModelSettingsPanel(state: AppUiState) {
             }
             Text("聊天输入区使用", fontSize = 11.sp, color = SubInk)
         }
+        SectionLabel("手动添加模型")
+        Text(
+            "Agora 同款：模型 id 手填，挂在下面选好的提供商名下；请求走这家的 base 与密钥。同步不会洗掉它。",
+            fontSize = 12.sp,
+            color = SubInk,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+        )
+        CustomModelProviderRow(models.settings.providers.map { it.id to models.displayProviderName(it.id) }, customProviderId) { customProviderId = it }
+        SettingInput("模型 id", customModelName, "例如 gpt-4o-mini") { customModelName = it }
+        SettingInput("别名，可空", customAlias, "留空用模型原名") { customAlias = it }
+        ActionButton("加入这个模型") {
+            val error = models.addCustomModel(customProviderId, customModelName, customAlias)
+            if (error != null) state.toast(error) else {
+                customModelName = ""; customAlias = ""; state.toast("自定义模型已加入并启用")
+            }
+        }
         SectionLabel("可用模型")
         ActionButton(if (models.busyProviderId == null) "从所有提供商同步" else "正在同步") { models.refreshAll() }
         models.errors.forEach { (provider, error) ->
             Text("$provider：$error", fontSize = 12.sp, color = ErrRed, modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp))
         }
         val grouped = models.availableModels().groupBy { it.providerName }
-        if (grouped.isEmpty()) Text("还没有拉到模型：先配置提供商，再点上面的同步。", fontSize = 12.5.sp, color = SubInk)
+        if (grouped.isEmpty()) Text("还没有拉到模型：先配置提供商，再点上面的同步，或者手动加一个。", fontSize = 12.5.sp, color = SubInk)
         grouped.forEach { (provider, rows) ->
             SectionLabel("$provider · ${rows.size}")
             rows.forEach { model ->
@@ -72,7 +94,7 @@ fun ModelSettingsPanel(state: AppUiState) {
                 ) {
                     Checkbox(checked = model.enabled, onCheckedChange = { models.setModelEnabled(model.id, it) }, colors = CheckboxDefaults.colors(checkedColor = Accent))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(model.alias ?: model.modelName, fontSize = 14.sp, color = Ink)
+                        Text((model.alias ?: model.modelName) + if (model.custom) "（自加）" else "", fontSize = 14.sp, color = Ink)
                         BasicTextField(
                             value = draft,
                             onValueChange = { drafts[model.id] = it; models.setAlias(model.id, it) },
@@ -80,6 +102,7 @@ fun ModelSettingsPanel(state: AppUiState) {
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+                    if (model.custom) ActionButton("删除") { models.deleteCustomModel(model.id)?.let(state::toast) }
                 }
             }
         }

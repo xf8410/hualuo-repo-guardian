@@ -16,19 +16,24 @@ import kotlinx.serialization.json.putJsonObject
 
 data class CustomProvider(val name: String, val baseUrl: String)
 data class ProviderSettings(val id: String, val custom: Boolean, val baseUrl: String, val apiKey: String)
+
+/** 自定义注册的单条模型：挂在某个提供商名下，请求时按该提供商的 base 与密钥发送。 */
+data class CustomModel(val id: String, val providerId: String, val modelName: String, val alias: String = "")
+
 data class ModelSettings(
     val providers: List<ProviderSettings>,
     val activeProviderId: String,
     val availableModels: Map<String, List<String>>,
     val enabledModels: Set<String>,
     val aliases: Map<String, String>,
+    val customModels: List<CustomModel> = emptyList(),
 ) {
     fun provider(id: String): ProviderSettings? = providers.firstOrNull { it.id == id }
 }
 
 object ModelSettingsCodec {
     const val KEY = "model.settings_json"
-    const val FORMAT = 1
+    const val FORMAT = 2
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
     fun defaultSettings(): ModelSettings = ModelSettings(
@@ -42,6 +47,11 @@ object ModelSettingsCodec {
         putJsonObject("available_models") { settings.availableModels.toSortedMap().forEach { (id, models) -> putJsonArray(id) { models.sorted().forEach { add(JsonPrimitive(it)) } } } }
         putJsonArray("enabled_models") { settings.enabledModels.sorted().forEach { add(JsonPrimitive(it)) } }
         putJsonObject("aliases") { settings.aliases.toSortedMap().forEach { (id, alias) -> put(id, alias) } }
+        putJsonArray("custom_models") {
+            settings.customModels.sortedBy { it.id }.forEach { m ->
+                addJsonObject { put("id", m.id); put("provider", m.providerId); put("model", m.modelName); put("alias", m.alias) }
+            }
+        }
     }.toString()
 
     fun decode(raw: String?): ModelSettings {
@@ -57,8 +67,21 @@ object ModelSettingsCodec {
         (root["available_models"] as? JsonObject)?.forEach { (id, value) -> (value as? JsonArray)?.let { array -> val models = array.mapNotNull { it.primitiveValue() }.distinct(); if (models.isNotEmpty()) available[id] = models } }
         val enabled = (root["enabled_models"] as? JsonArray ?: JsonArray(emptyList())).mapNotNull { it.primitiveValue() }.filter { it.contains(":") }.toSet()
         val aliases = linkedMapOf<String, String>(); (root["aliases"] as? JsonObject)?.forEach { (id, value) -> value.primitiveValue()?.let { aliases[id] = it } }
+        val customModels = (root["custom_models"] as? JsonArray ?: JsonArray(emptyList())).mapNotNull { element ->
+            val o = element as? JsonObject ?: return@mapNotNull null
+            val id = o.primitive("id") ?: return@mapNotNull null
+            val providerId = o.primitive("provider").orEmpty()
+            val modelName = o.primitive("model").orEmpty()
+            if (providerId.isBlank() || modelName.isBlank()) return@mapNotNull null
+            CustomModel(id, providerId, modelName, o.primitive("alias").orEmpty())
+        }.distinctBy { it.id }
+        val withCustomAvailable = available.toMutableMap()
+        customModels.groupBy { it.providerId }.forEach { (providerId, rows) ->
+            val merged = (withCustomAvailable[providerId].orEmpty() + rows.map { it.id }).distinct()
+            if (merged.isNotEmpty()) withCustomAvailable[providerId] = merged
+        }
         val requestedActive = root.primitive("active_provider"); val active = requestedActive?.takeIf { id -> providers.any { it.id == id } } ?: providers.first().id
-        return ModelSettings(providers, active, available, enabled, aliases)
+        return ModelSettings(providers, active, withCustomAvailable, enabled, aliases, customModels)
     }
 
     fun migrateLegacy(legacyName: String?, legacyBaseUrl: String?, legacyApiKey: String?): ModelSettings {

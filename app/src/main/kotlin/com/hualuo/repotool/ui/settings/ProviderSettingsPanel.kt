@@ -3,14 +3,11 @@ package com.hualuo.repotool.ui.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -21,17 +18,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.engine.api.ProviderCatalog
 import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.state.ModelSettingsRuntime
 import com.hualuo.repotool.ui.theme.Accent
-import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.CardBg
 import com.hualuo.repotool.ui.theme.ErrRed
 import com.hualuo.repotool.ui.theme.Hairline
@@ -84,22 +77,6 @@ fun ProviderSettingsPanel(state: AppUiState) {
         }
     }
 }
-
-@Composable internal fun SectionLabel(text: String) { Text(text, fontSize = 13.sp, color = Accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 6.dp, top = 14.dp, bottom = 7.dp)) }
-
-@Composable
-internal fun SettingInput(label: String, value: String, placeholder: String, secret: Boolean = false, onChange: (String) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(bottom = 9.dp).clip(RoundedCornerShape(16.dp)).background(CardBg).padding(horizontal = 14.dp, vertical = 11.dp)) {
-        Text(label, fontSize = 12.sp, color = SubInk)
-        Spacer(Modifier.padding(top = 6.dp))
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Bg).border(1.dp, Hairline, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 9.dp)) {
-            if (value.isEmpty()) Text(placeholder, fontSize = 13.sp, color = SubInk)
-            BasicTextField(value = value, onValueChange = onChange, singleLine = true, visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None, textStyle = TextStyle(fontSize = 13.sp, color = Ink), modifier = Modifier.fillMaxWidth())
-        }
-    }
-}
-
-@Composable internal fun ActionButton(text: String, onClick: () -> Unit) { Box(Modifier.padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp)).background(Accent).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp)) { Text(text, color = Color.White, fontSize = 13.sp) } }
 
 @Composable
 private fun ProviderRow(name: String, detail: String, configured: Boolean, selected: Boolean, onClick: () -> Unit) {
