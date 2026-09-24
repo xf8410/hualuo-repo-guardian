@@ -74,6 +74,8 @@ class AppUiState(
     private val store: SessionStore? = null,
     /** 写类工具的确认闸门；null = 不注册写工具（默认拒写的另一半）。 */
     private val writeGate: WriteConfirmGate? = null,
+    /** 记忆库；null = 不注册记忆工具族（同闸门纪律）。 */
+    private val memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
@@ -191,7 +193,12 @@ class AppUiState(
         store = store,
         maxHistoryTurns = { readInt(UiKeys.MAX_HISTORY, ChatRuntime.MAX_HISTORY_TURNS).coerceIn(1, 500) },
         systemPrompt = { persist.load(ChatRuntime.KEY_SYSTEM_PROMPT)?.trim().orEmpty() },
-        toolRegistry = buildGithubToolRegistry(persist, writeGate),
+        toolRegistry = buildGithubToolRegistry(
+            persist,
+            writeGate,
+            memoryStore = memoryStore,
+            sessionStore = store,
+        ),
     )
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */

@@ -35,6 +35,8 @@ fun buildGithubToolRegistry(
     sandboxConfirmer: SandboxConfirmer? = null,
     sandboxRootDir: File? = null,
     prConfirmer: com.hualuo.engine.toolcalls.PrConfirmer? = null,
+    memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
+    sessionStore: com.hualuo.engine.store.SessionStore? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -57,6 +59,11 @@ fun buildGithubToolRegistry(
             confirmer = prConfirmer,
         )
     }
+    // 记忆族（M4 第二刀）：不注入 memoryStore 一件不注册（默认拒）
+    com.hualuo.engine.toolcalls.MemoryTool.register(registry, memoryStore)
+    // 对话检索族（M4 第三刀）：吃会话仓本体——会话库没建成（store=null）检索工具就不存在，
+    // 「搜不到」比「工具在但永远空手」诚实
+    com.hualuo.engine.toolcalls.RagTool.register(registry, sessionStore)
     if (sandboxConfirmer != null && sandboxRootDir != null) {
         val root = sandboxRootDir
         SandboxToolFamily.register(
