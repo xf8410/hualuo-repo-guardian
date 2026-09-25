@@ -25,6 +25,7 @@ import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.Ink
 import com.hualuo.repotool.ui.theme.SubInk
+import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
  * 视频库卡（看视频第二刀的界面）：导入录屏 -> 后台抽帧缓存 -> 对话里的 AI
