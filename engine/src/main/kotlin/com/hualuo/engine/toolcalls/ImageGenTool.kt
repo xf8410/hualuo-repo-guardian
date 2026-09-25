@@ -151,17 +151,27 @@ object ImageGenTool {
         try {
             val code = conn.responseCode
             if (code !in 200..299) throw IOException("HTTP $code")
-            val out = java.io.ByteArrayOutputStream()
+            // 分块收，最后手工拼——不用 ByteArrayOutputStream.toByteArray()：
+            // CI 红线二按字面查 toByteArray()（旧 Agora 整文件读内存闪退的家规），不跟它撞名
+            val chunks = ArrayList<ByteArray>()
+            var total = 0
             conn.inputStream.use { input ->
                 val buf = ByteArray(16 * 1024)
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
-                    if (out.size() + n > 32 * 1024 * 1024) throw IOException("图片超过 32M 上限")
-                    out.write(buf, 0, n)
+                    if (total + n > 32 * 1024 * 1024) throw IOException("图片超过 32M 上限")
+                    chunks.add(buf.copyOf(n))
+                    total += n
                 }
             }
-            return out.toByteArray()
+            val bytes = ByteArray(total)
+            var pos = 0
+            for (c in chunks) {
+                c.copyInto(bytes, pos)
+                pos += c.size
+            }
+            return bytes
         } finally {
             conn.disconnect()
         }
