@@ -15,7 +15,7 @@ import java.io.IOException
  */
 class MemoryStore(
     memoryDir: File,
-    private val activeFile: File,
+    private val activeFile: File? = null,
 ) {
     private val memoryDir: File = memoryDir.apply { mkdirs() }
     private val metaFile: File = File(memoryDir, "memory_meta.json")
@@ -24,10 +24,12 @@ class MemoryStore(
     data class MemoryFileInfo(val name: String, val description: String)
 
     // ---------- 活动记忆（单文件，进每次生成的上下文） ----------
+    // activeFile 可空（M4 第六刀）：技能库复用本件但**没有**活动记忆概念——
+    // 不给文件的库，读回空串、写直接拒，不许悄悄落到别处。
 
     @Synchronized
     fun readActiveMemory(): String =
-        if (activeFile.exists()) activeFile.readText() else ""
+        activeFile?.takeIf { it.exists() }?.readText() ?: ""
 
     @Synchronized
     fun writeActiveMemory(
@@ -36,6 +38,7 @@ class MemoryStore(
         oldString: String? = null,
         newString: String? = null,
     ): String {
+        requireNotNull(activeFile) { "这个库没配活动记忆文件（技能库没有活动记忆概念）" }
         val existing = readActiveMemory()
         val updated = when (mode) {
             "replace" -> content

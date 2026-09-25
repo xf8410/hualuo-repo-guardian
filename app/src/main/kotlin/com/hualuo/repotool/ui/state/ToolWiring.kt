@@ -38,6 +38,7 @@ fun buildGithubToolRegistry(
     memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
     sessionStore: com.hualuo.engine.store.SessionStore? = null,
     webSearchEnabled: (() -> Boolean)? = null,
+    skillStore: com.hualuo.engine.memory.MemoryStore? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -72,6 +73,8 @@ fun buildGithubToolRegistry(
         fetcher = { url -> com.hualuo.engine.search.WebSearchClient.defaultFetcher(url) },
         visibleIf = webSearchEnabled,
     )
+    // 技能族（M4 第六刀）：复用 MemoryStore（skill_db，无活动记忆文件）；不注入不注册
+    com.hualuo.engine.toolcalls.SkillTool.register(registry, skillStore)
     if (sandboxConfirmer != null && sandboxRootDir != null) {
         val root = sandboxRootDir
         SandboxToolFamily.register(
