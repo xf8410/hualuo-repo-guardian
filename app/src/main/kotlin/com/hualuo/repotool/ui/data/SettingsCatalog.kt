@@ -15,6 +15,17 @@ const val RETRY_COSTLY_KEY = "ui.retry_costly_on_gateway"
 const val RETRY_COSTLY_DEFAULT = false
 
 val RealSubPages: Map<String, SubPage> = mapOf(
+    "vision" to SubPage(
+        "看视频的眼睛",
+        listOf(
+            SubField.PersistedText(
+                "眼睛模型",
+                UiKeys.VISION_MODEL,
+                "已启用模型的完整 id（如 google:gemini-2.0-flash）；它负责看帧出文字，主对话模型随便用什么都行",
+            ),
+            SubField.Note("录屏导入时抽好帧缓存；对话里的 AI 调 watch_video 工具即看，不依赖主模型自带视觉。"),
+        ),
+    ),
     "imagegen" to SubPage(
         "图像生成",
         listOf(

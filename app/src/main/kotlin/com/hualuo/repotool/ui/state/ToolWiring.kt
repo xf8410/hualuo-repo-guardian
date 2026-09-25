@@ -42,6 +42,9 @@ fun buildGithubToolRegistry(
     imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
     imageGenPersist: ((ByteArray, String) -> String)? = null,
     videoUrlSession: (() -> com.hualuo.engine.api.ProviderSession?)? = null,
+    watchInboxDir: File? = null,
+    watchFramesDir: File? = null,
+    visionSession: (() -> com.hualuo.engine.api.ProviderSession?)? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -90,6 +93,16 @@ fun buildGithubToolRegistry(
             poster = { url, body, bearer -> com.hualuo.engine.toolcalls.ImageGenTool.defaultPoster(url, body, bearer) },
             downloadBytes = { url -> com.hualuo.engine.toolcalls.ImageGenTool.defaultDownloader(url) },
             persist = imageGenPersist,
+        )
+    }
+    // 看视频（第二刀）：录屏导入时已抽帧缓存，对话模型调 list_videos/watch_video 拿**文字**——
+    // 主对话模型不用自带视觉；眼睛模型没配（visionSession 拿不到会话）=两件不注册
+    if (watchInboxDir != null && watchFramesDir != null && visionSession != null) {
+        com.hualuo.engine.toolcalls.VideoTool.register(
+            registry,
+            manifestsDir = watchInboxDir,
+            framesDir = watchFramesDir,
+            visionSession = visionSession,
         )
     }
     if (sandboxConfirmer != null && sandboxRootDir != null) {

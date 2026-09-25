@@ -1,6 +1,5 @@
 package com.hualuo.repotool.ui.tools
 
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -22,7 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.repotool.ui.components.CardTitle
 import com.hualuo.repotool.ui.components.HCard
-import com.hualuo.repotool.ui.state.VideoUnderstandingState
+import com.hualuo.repotool.ui.state.AppUiState
 import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.Ink
@@ -30,101 +28,72 @@ import com.hualuo.repotool.ui.theme.SubInk
 import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
- * 视频理解卡（看视频功能的界面）：选录屏 -> 定抽帧计划 -> 开始（后台整链：抽帧+分批+汇总）。
- * 主线程零视频工作；所有编排在 [VideoUnderstandingState]（纯 JVM 可测）。
+ * 视频库卡（看视频第二刀的界面）：导入录屏 -> 后台抽帧缓存 -> 对话里的 AI
+ * 用 list_videos / watch_video 工具看。**理解发生在对话里**——主对话模型
+ * 是什么（纯文本也行）都能看，眼睛模型在设置里单独配。
  */
 @Composable
-fun VideoUnderstandingCard(v: VideoUnderstandingState) {
+fun VideoUnderstandingCard(state: AppUiState) {
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val duration = AndroidVideoFrames.durationMs(context, uri)
-            v.planVideo(uri.toString(), duration)
-            if (duration <= 0) v.resetVideoNoteTo("读不到时长：这个文件可能不是视频（或已失效）")
+        if (uri != null && !state.video.videoImporting && state.watchInboxDir != null && state.watchFramesDir != null) {
+            val inbox = state.watchInboxDir
+            val frames = state.watchFramesDir
+            state.video.setVideoImporting(true, "拷贝进库…")
+            Thread({
+                val copied = VideoImporter.copyIn(context, uri, inbox, queryDisplayName(context, uri))
+                if (copied == null) {
+                    state.video.setVideoImporting(false, "拷贝失败：文件读不动")
+                    return@Thread
+                }
+                val manifest = VideoImporter.import(state, copied, frames, inbox)
+                if (manifest == null) {
+                    copied.delete()
+                    state.video.setVideoImporting(false, "导入失败：抽不出帧（文件损坏或不是视频）")
+                } else {
+                    state.video.setVideoImporting(false, "已入库：${copied.name}——现在可以在对话里让 AI 看它了")
+                }
+            }, "hualuo-video-import").start()
         }
     }
 
     HCard {
-        CardTitle("视频理解（看画面读攻略）")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box2Button("选视频", enabled = !v.videoBusy) { picker.launch(arrayOf("video/*")) }
-            Spacer(Modifier.width(8.dp))
-            // 时长没读出来（=0）不许开跑：单帧瞎抽不是降级是浪费（审查第 1 条的另一半）
+        CardTitle("视频库（对话 AI 可看）")
+        Text(
+            "导入录屏后，对话里直接说「看一下 XX 视频」——AI 调 watch_video 自己读，主对话模型不用带视觉。",
+            fontSize = 12.sp, color = SubInk,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row {
             Box2Button(
-                if (v.videoBusy) (v.videoProgress ?: "跑着…") else "开始理解",
-                enabled = !v.videoBusy && v.videoDurationMs > 0 && v.videoUri != null,
-                accent = !v.videoBusy,
+                if (state.video.videoImporting) "导入中…" else "导入录屏",
+                enabled = !state.video.videoImporting,
+                accent = !state.video.videoImporting,
             ) {
-                val uri = v.videoUri ?: return@Box2Button
-                v.startVideoUnderstanding { times -> AndroidVideoFrames.extractFrames(context, Uri.parse(uri), times) }
-            }
-            if (v.videoBusy) {
-                Spacer(Modifier.width(8.dp))
-                Box2Button("停止", enabled = true) { v.stopVideo() }
+                picker.launch(arrayOf("video/*"))
             }
         }
-        if (v.videoUri != null && v.videoDurationMs > 0) {
+        state.video.videoImportNote?.let { note ->
             Spacer(Modifier.height(6.dp))
-            Text(
-                "已选 ${v.videoFrameTimes.size} 帧 · 时长 ${v.videoDurationMs / 1000}s" +
-                    if (v.videoBusy) "" else "（当前视觉模型：聊天选定的那个）",
-                fontSize = 12.sp, color = SubInk,
-            )
+            Text(note, fontSize = 12.sp, color = if (state.video.videoImporting) WarnAmber else SubInk)
         }
-        v.videoNote?.let { note ->
+        if (state.video.videoLibraryCache.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            Text(note, fontSize = 12.sp, color = WarnAmber)
-        }
-        if (v.videoBatchNotes.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("各批画面描述：", fontSize = 12.sp, color = SubInk)
-            v.videoBatchNotes.forEachIndexed { i, note ->
-                Text("第 ${i + 1} 批：$note", fontSize = 11.sp, color = SubInk)
+            state.video.videoLibraryCache.forEach { line ->
+                Text("· $line", fontSize = 12.sp, color = Ink)
             }
+        } else if (!state.video.videoImporting) {
+            Spacer(Modifier.height(6.dp))
+            Text("库还是空的", fontSize = 12.sp, color = SubInk)
         }
-        v.videoSummary?.let { summary ->
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("总结", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.width(8.dp))
-                CopyButton(summary)
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(summary, fontSize = 13.sp, color = Ink)
-        }
-        if (v.videoUri != null && !v.videoBusy) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "清掉重来",
-                fontSize = 12.sp,
-                color = SubInk,
-                modifier = Modifier
-                    .clickable { v.resetVideo() }
-                    .padding(vertical = 4.dp),
-            )
-        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "眼睛模型在 设置-看视频的眼睛 里配；没配的话对话 AI 看不了视频。",
+            fontSize = 10.5.sp, color = SubInk,
+        )
     }
 }
 
-/** 复制按钮（读写系统剪贴板，读侧不用）。 */
-@Composable
-private fun CopyButton(text: String) {
-    val context = LocalContext.current
-    Text(
-        "复制",
-        fontSize = 12.sp,
-        color = Accent,
-        modifier = Modifier
-            .clickable {
-                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                    as? android.content.ClipboardManager
-                cm?.setPrimaryClip(android.content.ClipData.newPlainText("video-summary", text))
-            }
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-    )
-}
-
-/** 卡内通用小按钮（背景色区分主次，无新组件依赖）。 */
 @Composable
 private fun Box2Button(label: String, enabled: Boolean = true, accent: Boolean = false, onClick: () -> Unit) {
     androidx.compose.foundation.layout.Box(

@@ -72,6 +72,8 @@ class HualuoApplication : Application() {
                 out.writeBytes(bytes)
                 out.absolutePath
             },
+            watchInboxDir = File(filesDir, "watch_inbox").apply { mkdirs() },
+            watchFramesDir = File(filesDir, "watch_frames").apply { mkdirs() },
         )
     }
 
