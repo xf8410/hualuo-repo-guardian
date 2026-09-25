@@ -39,6 +39,8 @@ fun buildGithubToolRegistry(
     sessionStore: com.hualuo.engine.store.SessionStore? = null,
     webSearchEnabled: (() -> Boolean)? = null,
     skillStore: com.hualuo.engine.memory.MemoryStore? = null,
+    imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
+    imageGenPersist: ((ByteArray, String) -> String)? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -75,6 +77,16 @@ fun buildGithubToolRegistry(
     )
     // 技能族（M4 第六刀）：复用 MemoryStore（skill_db，无活动记忆文件）；不注入不注册
     com.hualuo.engine.toolcalls.SkillTool.register(registry, skillStore)
+    // 图像生成（M4 第七刀）：config+persist 都给才注册；钥匙没配=不可见（可见性现问现答）
+    if (imageGenConfig != null && imageGenPersist != null) {
+        com.hualuo.engine.toolcalls.ImageGenTool.register(
+            registry,
+            loadConfig = imageGenConfig,
+            poster = { url, body, bearer -> com.hualuo.engine.toolcalls.ImageGenTool.defaultPoster(url, body, bearer) },
+            downloadBytes = { url -> com.hualuo.engine.toolcalls.ImageGenTool.defaultDownloader(url) },
+            persist = imageGenPersist,
+        )
+    }
     if (sandboxConfirmer != null && sandboxRootDir != null) {
         val root = sandboxRootDir
         SandboxToolFamily.register(

@@ -101,4 +101,13 @@ object UiKeys {
     const val COURIER_REPO = "courier.repo"
     const val COURIER_BRANCH = "courier.branch"
     const val COURIER_TOKEN = "courier.token"
+
+    /**
+     * 图像生成（M4 第七刀）：OpenAI 兼容 /images/generations 的钥匙与端点。
+     * 钥匙没配 = 工具不注册（模型碰不到，设置页也没有半个摆设字段）。
+     */
+    const val IMAGE_GEN_KEY = "imagegen.key"
+    const val IMAGE_GEN_BASE_URL = "imagegen.base_url"
+    const val IMAGE_GEN_MODEL = "imagegen.model"
+    const val IMAGE_GEN_SIZE = "imagegen.size"
 }

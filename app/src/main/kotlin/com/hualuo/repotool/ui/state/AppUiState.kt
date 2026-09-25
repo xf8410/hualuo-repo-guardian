@@ -78,6 +78,10 @@ class AppUiState(
     private val memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
     /** 技能库；null = 不注册技能工具族、系统提示词不拼技能目录。 */
     private val skillStore: com.hualuo.engine.memory.MemoryStore? = null,
+    /** 图像生成配置读取（钥匙没配返回不可用配置）；null = 不注册图像生成。 */
+    private val imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
+    /** 图像字节落盘（字节、文件名前缀）到保存路径；null = 不注册图像生成。 */
+    private val imageGenPersist: ((ByteArray, String) -> String)? = null,
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
@@ -212,6 +216,8 @@ class AppUiState(
             sessionStore = store,
             webSearchEnabled = { webSearchOn },
             skillStore = skillStore,
+            imageGenConfig = imageGenConfig,
+            imageGenPersist = imageGenPersist,
         ),
     )
 

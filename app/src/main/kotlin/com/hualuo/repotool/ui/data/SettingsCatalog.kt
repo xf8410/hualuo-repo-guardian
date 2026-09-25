@@ -15,6 +15,16 @@ const val RETRY_COSTLY_KEY = "ui.retry_costly_on_gateway"
 const val RETRY_COSTLY_DEFAULT = false
 
 val RealSubPages: Map<String, SubPage> = mapOf(
+    "imagegen" to SubPage(
+        "图像生成",
+        listOf(
+            SubField.PersistedText("API 密钥", UiKeys.IMAGE_GEN_KEY, "OpenAI 兼容 /images/generations 的钥匙；配了生成工具就出现", secret = true),
+            SubField.PersistedText("API 地址", UiKeys.IMAGE_GEN_BASE_URL, "默认 https://api.openai.com/v1（兼容端点填到 v1 为止）"),
+            SubField.PersistedText("模型", UiKeys.IMAGE_GEN_MODEL, "默认 gpt-image-1"),
+            SubField.PersistedText("尺寸", UiKeys.IMAGE_GEN_SIZE, "默认 1024x1024"),
+            SubField.Note("出图存到应用目录 tool_images 下，回执里报路径。"),
+        ),
+    ),
     "retry" to SubPage(
         "失败与重试",
         listOf(
