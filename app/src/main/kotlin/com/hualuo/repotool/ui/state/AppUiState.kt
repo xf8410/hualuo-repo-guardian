@@ -76,6 +76,8 @@ class AppUiState(
     private val writeGate: WriteConfirmGate? = null,
     /** 记忆库；null = 不注册记忆工具族（同闸门纪律）。 */
     private val memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
+    /** 技能库；null = 不注册技能工具族、系统提示词不拼技能目录。 */
+    private val skillStore: com.hualuo.engine.memory.MemoryStore? = null,
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
@@ -192,13 +194,24 @@ class AppUiState(
         autoRetryCostly = { flag(RETRY_COSTLY_KEY, RETRY_COSTLY_DEFAULT) },
         store = store,
         maxHistoryTurns = { readInt(UiKeys.MAX_HISTORY, ChatRuntime.MAX_HISTORY_TURNS).coerceIn(1, 500) },
-        systemPrompt = { persist.load(ChatRuntime.KEY_SYSTEM_PROMPT)?.trim().orEmpty() },
+        systemPrompt = {
+            val base = persist.load(ChatRuntime.KEY_SYSTEM_PROMPT)?.trim().orEmpty()
+            // 技能目录拼在系统提示词后（对齐旧仓 GenerationRequestBuilder 的 available_skills
+            // 注入）：只报名字+描述，正文模型按需 read；空库不占一个字
+            val catalog = skillStore?.let { com.hualuo.engine.toolcalls.SkillTool.catalog(it) }.orEmpty()
+            when {
+                catalog.isEmpty() -> base
+                base.isEmpty() -> catalog
+                else -> base + "\n\n" + catalog
+            }
+        },
         toolRegistry = buildGithubToolRegistry(
             persist,
             writeGate,
             memoryStore = memoryStore,
             sessionStore = store,
             webSearchEnabled = { webSearchOn },
+            skillStore = skillStore,
         ),
     )
 

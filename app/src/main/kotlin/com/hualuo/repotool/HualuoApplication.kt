@@ -42,8 +42,17 @@ class HualuoApplication : Application() {
         }
     }
 
+    /** 技能库（M4 第六刀）：skill_db，无活动记忆文件；建不起来 null 降级。 */
+    private val skillStore: com.hualuo.engine.memory.MemoryStore? by lazy {
+        try {
+            com.hualuo.engine.memory.MemoryStore(memoryDir = File(filesDir, "skill_db"))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     val uiState: AppUiState by lazy {
-        AppUiState(uiBundle.persistence, uiBundle.store, writeGate, memoryStore)
+        AppUiState(uiBundle.persistence, uiBundle.store, writeGate, memoryStore, skillStore)
     }
 
     private val startupNotice = OnceNotice { uiBundle.notice }
