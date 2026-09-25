@@ -14,6 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,87 +25,74 @@ import com.hualuo.repotool.ui.theme.Accent
 import com.hualuo.repotool.ui.theme.Bg
 import com.hualuo.repotool.ui.theme.Ink
 import com.hualuo.repotool.ui.theme.SubInk
-import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
- * 视频理解卡（看视频功能第一刀的界面）：选录屏 -> 定抽帧计划 -> 抽帧 -> 分批视觉问答 -> 汇总。
- *
- * 职责只两件：把 SAF 选来的 uri/时长交给状态层（[AppUiState.planVideo]）；
- * 「开始理解」时按状态层给的时间点在后台抽帧（[AppUiState.onVideoFramesReady]）。
- * 编排、请求、汇总全在状态层与引擎件——界面只出力不拿主意。
+ * 视频库卡（看视频第二刀的界面）：导入录屏 -> 后台抽帧缓存 -> 对话里的 AI
+ * 用 list_videos / watch_video 工具看。**理解发生在对话里**——主对话模型
+ * 是什么（纯文本也行）都能看，眼睛模型在设置里单独配。
  */
 @Composable
-fun VideoUnderstandingCard(
-    state: AppUiState,
-    pickVideo: androidx.activity.compose.ManagedActivityResultLauncher<Array<String>, android.net.Uri?>,
-    onStart: (List<Long>) -> Unit,
-) {
+fun VideoUnderstandingCard(state: AppUiState) {
+    val context = LocalContext.current
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !state.videoImporting && state.watchInboxDir != null && state.watchFramesDir != null) {
+            val inbox = state.watchInboxDir
+            val frames = state.watchFramesDir
+            state.setVideoImporting(true, "拷贝进库…")
+            Thread({
+                val copied = VideoImporter.copyIn(context, uri, inbox, queryDisplayName(context, uri))
+                if (copied == null) {
+                    state.setVideoImporting(false, "拷贝失败：文件读不动")
+                    return@Thread
+                }
+                val manifest = VideoImporter.import(state, copied, frames, inbox)
+                if (manifest == null) {
+                    copied.delete()
+                    state.setVideoImporting(false, "导入失败：抽不出帧（文件损坏或不是视频）")
+                } else {
+                    state.setVideoImporting(false, "已入库：${copied.name}——现在可以在对话里让 AI 看它了")
+                }
+            }, "hualuo-video-import").start()
+        }
+    }
+
     HCard {
-        CardTitle("视频理解（看画面读攻略）")
+        CardTitle("视频库（对话 AI 可看）")
         Text(
-            "选一段录屏，AI 均匀抽帧逐批看，最后给画面流水与攻略要点。文字（选项/数值/提示）会原样读出。",
+            "导入录屏后，对话里直接说「看一下 XX 视频」——AI 调 watch_video 自己读，主对话模型不用带视觉。",
             fontSize = 12.sp, color = SubInk,
         )
         Spacer(Modifier.height(8.dp))
         Row {
             Box2Button(
-                label = if (state.videoUri == null) "选视频" else "换一段",
-                enabled = !state.videoBusy,
-            ) { pickVideo.launch(arrayOf("video/*")) }
-            Spacer(Modifier.width(8.dp))
-            if (state.videoUri != null) {
-                Box2Button(
-                    label = if (state.videoBusy) "看着…" else "开始理解",
-                    enabled = !state.videoBusy && state.videoFrameTimes.isNotEmpty(),
-                    accent = true,
-                ) { onStart(state.videoFrameTimes) }
+                if (state.videoImporting) "导入中…" else "导入录屏",
+                enabled = !state.videoImporting,
+                accent = !state.videoImporting,
+            ) {
+                picker.launch(arrayOf("video/*"))
             }
         }
-        if (state.videoUri != null) {
+        state.videoImportNote?.let { note ->
             Spacer(Modifier.height(6.dp))
-            Text(
-                "时长 ${(state.videoDurationMs + 999) / 1000} 秒，计划抽 ${state.videoFrameTimes.size} 帧" +
-                    "（分 ${(state.videoFrameTimes.size + com.hualuo.engine.vision.VideoPlan.PER_BATCH - 1) / com.hualuo.engine.vision.VideoPlan.PER_BATCH} 批读）",
-                fontSize = 12.sp, color = SubInk,
-            )
+            Text(note, fontSize = 12.sp, color = if (state.videoImporting) WarnAmber else SubInk)
         }
-        state.videoProgress?.let { p ->
+        if (state.videoLibraryCache.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            Text(p, fontSize = 12.sp, color = Accent)
-        }
-        state.videoNote?.let { note ->
-            Spacer(Modifier.height(6.dp))
-            Text(note, fontSize = 12.sp, color = WarnAmber)
-        }
-        if (state.videoBatchNotes.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("各批画面记录", fontSize = 12.sp, color = SubInk, fontWeight = FontWeight.SemiBold)
-            state.videoBatchNotes.forEachIndexed { i, note ->
-                Spacer(Modifier.height(4.dp))
-                Text("第 ${i + 1} 批：$note", fontSize = 12.sp, color = Ink)
+            state.videoLibraryCache.forEach { line ->
+                Text("· $line", fontSize = 12.sp, color = Ink)
             }
+        } else if (!state.videoImporting) {
+            Spacer(Modifier.height(6.dp))
+            Text("库还是空的", fontSize = 12.sp, color = SubInk)
         }
-        state.videoSummary?.let { summary ->
-            Spacer(Modifier.height(8.dp))
-            Text("总结", fontSize = 12.sp, color = SubInk, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            Text(summary, fontSize = 13.sp, color = Ink)
-        }
-        if (state.videoUri != null && !state.videoBusy) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "清掉重来",
-                fontSize = 12.sp,
-                color = SubInk,
-                modifier = Modifier
-                    .clickable { state.resetVideo() }
-                    .padding(vertical = 4.dp),
-            )
-        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "眼睛模型在 设置-看视频的眼睛 里配；没配的话对话 AI 看不了视频。",
+            fontSize = 10.5.sp, color = SubInk,
+        )
     }
 }
 
-/** 卡内通用小按钮（背景色区分主次，无新组件依赖）。 */
 @Composable
 private fun Box2Button(label: String, enabled: Boolean = true, accent: Boolean = false, onClick: () -> Unit) {
     androidx.compose.foundation.layout.Box(

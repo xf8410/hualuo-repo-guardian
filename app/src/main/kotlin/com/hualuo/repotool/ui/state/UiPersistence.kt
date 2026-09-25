@@ -110,4 +110,12 @@ object UiKeys {
     const val IMAGE_GEN_BASE_URL = "imagegen.base_url"
     const val IMAGE_GEN_MODEL = "imagegen.model"
     const val IMAGE_GEN_SIZE = "imagegen.size"
+
+    /**
+     * 看视频的「眼睛」模型（VisionTool 用）：填设置-模型里已启用模型的完整 id
+     * （provider:model 形如 google:gemini-2.0-flash）。**与主对话模型无关**——
+     * 主对话用什么模型都行（纯文本也可以），它调 watch_video 工具，
+     * 工具内部用这个眼睛模型读帧出文字还给主对话模型。没配=工具不注册。
+     */
+    const val VISION_MODEL = "vision.model"
 }

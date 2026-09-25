@@ -18,6 +18,7 @@ import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Conv
 import com.hualuo.repotool.ui.model.NavTab
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -82,6 +83,10 @@ class AppUiState(
     private val imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
     /** 图像字节落盘（字节、文件名前缀）到保存路径；null = 不注册图像生成。 */
     private val imageGenPersist: ((ByteArray, String) -> String)? = null,
+    /** 看视频的库目录（录屏本体+manifest）；null = 不注册看视频工具族。 */
+    val watchInboxDir: File? = null,
+    /** 帧缓存目录（导入时抽好的 JPEG）。 */
+    val watchFramesDir: File? = null,
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
@@ -218,8 +223,22 @@ class AppUiState(
             skillStore = skillStore,
             imageGenConfig = imageGenConfig,
             imageGenPersist = imageGenPersist,
+            watchInboxDir = watchInboxDir,
+            watchFramesDir = watchFramesDir,
+            visionSession = ::visionSessionOrDefault,
         ),
     )
+
+    /**
+     * 看视频的「眼睛」会话：设置里填的眼睛模型 id（provider:model）。
+     * 没填/解析不出 = null（工具两件不注册）。与主对话用什么模型无关——
+     * 纯文本主模型调 watch_video，眼睛读帧出文字给它。
+     */
+    private fun visionSessionOrDefault(): com.hualuo.engine.api.ProviderSession? {
+        val id = persist.load(UiKeys.VISION_MODEL)?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return ModelSettingsRuntime.current()?.sessionFor(id)
+    }
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
     val busy: Boolean get() = chat.busy
@@ -307,137 +326,29 @@ class AppUiState(
         }, "hualuo-web-search").start()
     }
 
-    // ── 视频理解（看视频刀：抽帧计划+分批问答+汇总，全编排纯 JVM） ────────────
+    // ── 视频库（看视频第二刀：导入编排纯 JVM；抽帧在界面层——MediaMetadataRetriever 是 Android 类） ──
 
-    /** 视觉会话来源（app 侧注入多提供商设置）；拿不到 = 没模型可用，如实报。 */
-    private val visionSession: () -> com.hualuo.engine.api.ProviderSession? = {
-        ModelSettingsRuntime.current()?.selectedModels()?.firstOrNull()?.id?.let { id ->
-            ModelSettingsRuntime.current()?.sessionFor(id)
+    var videoImporting by mutableStateOf(false)
+        private set
+    var videoImportNote by mutableStateOf<String?>(null)
+        private set
+    /** 库列表缓存（一条一行概览）；导入完成/删除后 refreshVideoLibrary() 刷。 */
+    var videoLibraryCache by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** 刷库列表（纯 JVM 读 manifest 账本）。 */
+    fun refreshVideoLibrary() {
+        val dir = watchInboxDir ?: return
+        videoLibraryCache = com.hualuo.engine.toolcalls.VideoTool.readManifests(dir).map { m ->
+            "${m.name}（${m.durationMs / 1000}s，${m.frames.size} 帧）"
         }
     }
 
-    /** SAF 选中的视频（uri 字符串；纯 JVM 状态不碰 Android 类）。 */
-    var videoUri by mutableStateOf<String?>(null)
-        private set
-    var videoDurationMs by mutableStateOf(0L)
-        private set
-    /** 抽帧计划（毫秒时间点，引擎算的）。抽帧动作在界面层做（MediaMetadataRetriever 是 Android 类）。 */
-    var videoFrameTimes by mutableStateOf<List<Long>>(emptyList())
-        private set
-    /** 抽帧完成的帧（JPEG base64，顺序对齐时间点）；private set，界面层抽完喂回来。 */
-    var videoFrames by mutableStateOf<List<String>>(emptyList())
-        private set
-    var videoBusy by mutableStateOf(false)
-        private set
-    var videoProgress by mutableStateOf<String?>(null)
-        private set
-    var videoBatchNotes by mutableStateOf<List<String>>(emptyList())
-        private set
-    var videoSummary by mutableStateOf<String?>(null)
-        private set
-    var videoNote by mutableStateOf<String?>(null)
-        private set
-
-    /** 选中视频后先定计划：时长进来，帧时间点出来，等界面层抽帧。 */
-    fun planVideo(uri: String, durationMs: Long) {
-        if (videoBusy) return
-        videoUri = uri
-        videoDurationMs = durationMs
-        videoFrameTimes = com.hualuo.engine.vision.VideoPlan.frameTimes(durationMs)
-        videoFrames = emptyList()
-        videoBatchNotes = emptyList()
-        videoSummary = null
-        videoNote = "计划 ${videoFrameTimes.size} 帧，选好后点「开始理解」"
-    }
-
-    /**
-     * 界面层抽完帧喂回来（与 [videoFrameTimes] 等长、同序；抽不出的位是 null），
-     * 立刻开跑分批理解。整条全空才拒——个别帧抽不出不该作废整段视频。
-     */
-    fun onVideoFramesReady(framesRaw: List<String?>) {
-        if (videoBusy) return
-        // 对齐配对：只留真抽出来的（时间点+帧一起留，批次对应关系不乱）
-        val pairs = videoFrameTimes.mapIndexed { i, t -> t to framesRaw.getOrNull(i) }
-            .filter { it.second != null }
-        if (pairs.isEmpty()) {
-            videoNote = "一帧都没抽出来：视频可能损坏或格式不支持"
-            return
-        }
-        val times = pairs.map { it.first }
-        val frames = pairs.map { requireNotNull(it.second) }
-        videoFrames = frames
-        videoBusy = true
-        videoProgress = null
-        videoNote = null
-        Thread({
-            val session = visionSession()
-            if (session == null) {
-                videoBusy = false
-                videoNote = "没有可用的模型会话：先去设置-提供商里配好模型"
-                return@Thread
-            }
-            val transport = com.hualuo.engine.api.UrlConnTransport()
-            val batches = com.hualuo.engine.vision.VideoPlan.batches(times)
-            val notes = mutableListOf<String>()
-            try {
-                batches.forEachIndexed { bi, batchTimes ->
-                    videoProgress = "读第 ${bi + 1}/${batches.size} 批画面"
-                    val batchFrames = batchTimes.mapNotNull { t ->
-                        val idx = times.indexOf(t)
-                        frames.getOrNull(idx)
-                    }
-                    val outcome = com.hualuo.engine.vision.VisionExec.ask(
-                        session, transport, batchFrames,
-                        com.hualuo.engine.vision.VideoPlan.describePrompt(bi, batches.size, batchTimes),
-                    )
-                    when (outcome) {
-                        is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> notes += outcome.text
-                        is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
-                            videoBusy = false
-                            videoProgress = null
-                            videoBatchNotes = notes.toList()
-                            videoNote = "第 ${bi + 1} 批没读出来：${outcome.reason}"
-                            return@Thread
-                        }
-                    }
-                }
-                videoBatchNotes = notes.toList()
-                videoProgress = "汇总中"
-                val summary = com.hualuo.engine.vision.VisionExec.askText(
-                    session, transport,
-                    com.hualuo.engine.vision.VideoPlan.summarizePrompt(notes.joinToString("\n\n"), null),
-                )
-                videoBusy = false
-                videoProgress = null
-                when (summary) {
-                    is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> videoSummary = summary.text
-                    is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
-                        // 汇总挂了不白跑：批描述已在手，如实说明
-                        videoNote = "画面都读完了，汇总没成：${summary.reason}"
-                    }
-                }
-            } catch (e: Exception) {
-                videoBusy = false
-                videoProgress = null
-                videoNote = "执行中断：${e.message ?: e.javaClass.simpleName}"
-            }
-        }, "hualuo-video-watch").start()
-    }
-
-    /** 选了打不开的文件时，界面层给一句人话说明（计划照立，时长为 0）。 */
-    fun resetVideoNoteTo(note: String) {
-        if (!videoBusy) videoNote = note
-    }
-
-    fun resetVideo() {
-        if (videoBusy) return
-        videoUri = null
-        videoDurationMs = 0
-        videoFrameTimes = emptyList()
-        videoFrames = emptyList()
-        videoBatchNotes = emptyList()
-        videoSummary = null
-        videoNote = null
+    /** 导入编排的口子：界面层在后台线程做拷贝/抽帧/写账，只把进度与收场报进来。 */
+    fun setVideoImporting(busy: Boolean, note: String? = null) {
+        videoImporting = busy
+        if (note != null) videoImportNote = note
+        if (!busy) refreshVideoLibrary()
     }
 
     // ── 仓库CI（GitHub 只读） ───────────────────────────────────────────────
