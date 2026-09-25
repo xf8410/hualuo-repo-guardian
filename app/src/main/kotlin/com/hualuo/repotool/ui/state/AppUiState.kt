@@ -307,6 +307,133 @@ class AppUiState(
         }, "hualuo-web-search").start()
     }
 
+    // ── 视频理解（看视频刀：抽帧计划+分批问答+汇总，全编排纯 JVM） ────────────
+
+    /** 视觉会话来源（app 侧注入多提供商设置）；拿不到 = 没模型可用，如实报。 */
+    private val visionSession: () -> com.hualuo.engine.api.ProviderSession? = {
+        ModelSettingsRuntime.current()?.selectedModels()?.firstOrNull()?.id?.let { id ->
+            ModelSettingsRuntime.current()?.sessionFor(id)
+        }
+    }
+
+    /** SAF 选中的视频（uri 字符串；纯 JVM 状态不碰 Android 类）。 */
+    var videoUri by mutableStateOf<String?>(null)
+        private set
+    var videoDurationMs by mutableStateOf(0L)
+        private set
+    /** 抽帧计划（毫秒时间点，引擎算的）。抽帧动作在界面层做（MediaMetadataRetriever 是 Android 类）。 */
+    var videoFrameTimes by mutableStateOf<List<Long>>(emptyList())
+        private set
+    /** 抽帧完成的帧（JPEG base64，顺序对齐时间点）；private set，界面层抽完喂回来。 */
+    var videoFrames by mutableStateOf<List<String>>(emptyList())
+        private set
+    var videoBusy by mutableStateOf(false)
+        private set
+    var videoProgress by mutableStateOf<String?>(null)
+        private set
+    var videoBatchNotes by mutableStateOf<List<String>>(emptyList())
+        private set
+    var videoSummary by mutableStateOf<String?>(null)
+        private set
+    var videoNote by mutableStateOf<String?>(null)
+        private set
+
+    /** 选中视频后先定计划：时长进来，帧时间点出来，等界面层抽帧。 */
+    fun planVideo(uri: String, durationMs: Long) {
+        if (videoBusy) return
+        videoUri = uri
+        videoDurationMs = durationMs
+        videoFrameTimes = com.hualuo.engine.vision.VideoPlan.frameTimes(durationMs)
+        videoFrames = emptyList()
+        videoBatchNotes = emptyList()
+        videoSummary = null
+        videoNote = "计划 ${videoFrameTimes.size} 帧，选好后点「开始理解」"
+    }
+
+    /** 界面层抽完帧喂回来（base64 顺序对齐 [videoFrameTimes]），立刻开跑分批理解。 */
+    fun onVideoFramesReady(framesBase64: List<String>) {
+        if (videoBusy) return
+        if (framesBase64.isEmpty()) {
+            videoNote = "一帧都没抽出来：视频可能损坏或格式不支持"
+            return
+        }
+        videoFrames = framesBase64
+        videoBusy = true
+        videoProgress = null
+        videoNote = null
+        Thread({
+            val session = visionSession()
+            if (session == null) {
+                videoBusy = false
+                videoNote = "没有可用的模型会话：先去设置-提供商里配好模型"
+                return@Thread
+            }
+            val transport = com.hualuo.engine.api.UrlConnTransport()
+            val batches = com.hualuo.engine.vision.VideoPlan.batches(videoFrameTimes)
+            val notes = mutableListOf<String>()
+            try {
+                batches.forEachIndexed { bi, times ->
+                    videoProgress = "读第 ${bi + 1}/${batches.size} 批画面"
+                    // 帧顺序与时间点一一对应：批内帧 = 时间点切片对应的 base64
+                    val batchFrames = times.mapIndexedNotNull { i, t ->
+                        val idx = videoFrameTimes.indexOf(t)
+                        framesBase64.getOrNull(idx)
+                    }
+                    val images = batchFrames.ifEmpty { framesBase64.take(times.size) }
+                    val outcome = com.hualuo.engine.vision.VisionExec.ask(
+                        session, transport, images,
+                        com.hualuo.engine.vision.VideoPlan.describePrompt(bi, batches.size, times),
+                    )
+                    when (outcome) {
+                        is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> notes += outcome.text
+                        is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
+                            videoBusy = false
+                            videoProgress = null
+                            videoBatchNotes = notes.toList()
+                            videoNote = "第 ${bi + 1} 批没读出来：${outcome.reason}"
+                            return@Thread
+                        }
+                    }
+                }
+                videoBatchNotes = notes.toList()
+                videoProgress = "汇总中"
+                val summary = com.hualuo.engine.vision.VisionExec.askText(
+                    session, transport,
+                    com.hualuo.engine.vision.VideoPlan.summarizePrompt(notes.joinToString("\n\n"), null),
+                )
+                videoBusy = false
+                videoProgress = null
+                when (summary) {
+                    is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> videoSummary = summary.text
+                    is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
+                        // 汇总挂了不白跑：批描述已在手，如实说明
+                        videoNote = "画面都读完了，汇总没成：${summary.reason}"
+                    }
+                }
+            } catch (e: Exception) {
+                videoBusy = false
+                videoProgress = null
+                videoNote = "执行中断：${e.message ?: e.javaClass.simpleName}"
+            }
+        }, "hualuo-video-watch").start()
+    }
+
+    /** 选了打不开的文件时，界面层给一句人话说明（计划照立，时长为 0）。 */
+    fun resetVideoNoteTo(note: String) {
+        if (!videoBusy) videoNote = note
+    }
+
+    fun resetVideo() {
+        if (videoBusy) return
+        videoUri = null
+        videoDurationMs = 0
+        videoFrameTimes = emptyList()
+        videoFrames = emptyList()
+        videoBatchNotes = emptyList()
+        videoSummary = null
+        videoNote = null
+    }
+
     // ── 仓库CI（GitHub 只读） ───────────────────────────────────────────────
 
     private val ciClient = GitHubCiClient()
