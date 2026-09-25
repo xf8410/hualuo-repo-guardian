@@ -34,18 +34,36 @@ class ToolRegistry {
     private val entries = LinkedHashMap<String, Entry>()
 
     /** 一份注册：清单形状与执行器捆在一起，拆开放会有人只注册一半。 */
-    data class Entry(val spec: ToolSpec, val handler: ToolHandler)
+    data class Entry(val spec: ToolSpec, val handler: ToolHandler, val visibleIf: (() -> Boolean)? = null)
 
     /** 注册一个工具。名字不合规直接抛（这是我们自己代码的错，开发期就该炸，不许等模型调用）。 */
     fun register(spec: ToolSpec, handler: ToolHandler) {
         require(spec.name.matches(NAME_RULE)) {
             "工具名「${spec.name}」不合规：只许字母、数字、下划线、横杠，1 到 64 位（OpenAI 的字符规）"
         }
-        entries[spec.name] = Entry(spec, handler)
+        entries[spec.name] = Entry(spec, handler, null)
+    }
+
+    /**
+     * 注册一个带**运行时可见性**的工具（M4 第五刀）：[visibleIf] 每轮请求现问——
+     * 关掉的工具从清单里**消失**（对齐旧 Agora definitions(ctx) 按开关返空的做法），
+     * 不是「看得见但点不动」；翻回开立刻回来，不用重启。
+     *
+     * 单独一个函数名而不是第三个默认参数：**尾随 lambda 会绑到最后一个参数**——
+     * register(spec) { ... } 的老写法会把执行器绑到 visibleIf 上冒充 Boolean，
+     * CI 编译段抓到过（ChatRuntime 的 clock 同款坑），不赌。
+     * 调用侧兜底：清单里没有却被叫到（开关在回合中途翻掉），按不可用回话，不执行。
+     */
+    fun registerGated(spec: ToolSpec, handler: ToolHandler, visibleIf: () -> Boolean) {
+        require(spec.name.matches(NAME_RULE)) {
+            "工具名「${spec.name}」不合规：只许字母、数字、下划线、横杠，1 到 64 位（OpenAI 的字符规）"
+        }
+        entries[spec.name] = Entry(spec, handler, visibleIf)
     }
 
     /** 清单（进请求 tools 数组的形状）；空注册表给空清单：空清单不发 tools 字段，行为与老版一字不差。 */
-    fun specs(): List<ToolSpec> = entries.values.map { it.spec }
+    fun specs(): List<ToolSpec> =
+        entries.values.filter { it.visibleIf == null || it.visibleIf() }.map { it.spec }
 
     fun isEmpty(): Boolean = entries.isEmpty()
 
@@ -54,10 +72,14 @@ class ToolRegistry {
     /**
      * 执行一次调用：没注册的名字、执行抛异常，都折成 [ToolOutcome.ok]=false 的文本
      * （照样回填给模型，让它自己改口或报错），绝不把异常抛穿到生成循环。
+     * 可见性为假的工具按「此刻不可用」回话——开关中途翻掉不该放行迟到的调用。
      */
     fun execute(name: String, argumentsJson: String): ToolOutcome {
         val entry = entries[name]
             ?: return ToolOutcome(false, "工具「$name」不存在。现在能用的工具：" + availableNames())
+        if (entry.visibleIf != null && !entry.visibleIf()) {
+            return ToolOutcome(false, "工具「$name」此刻不可用（对应开关刚被关掉）。")
+        }
         val result = runCatching { entry.handler.execute(argumentsJson) }
         return result.fold(
             onSuccess = { ToolOutcome(true, it) },

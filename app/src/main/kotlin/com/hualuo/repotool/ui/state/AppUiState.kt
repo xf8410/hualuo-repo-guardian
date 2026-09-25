@@ -198,6 +198,7 @@ class AppUiState(
             writeGate,
             memoryStore = memoryStore,
             sessionStore = store,
+            webSearchEnabled = { webSearchOn },
         ),
     )
 
