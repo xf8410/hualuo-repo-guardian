@@ -123,4 +123,20 @@ object VisionExec {
                 }
             }
         }.toString()
+
+
+    /** 问一次**服务端视频 URL**（Gemini fileData；其他协议按失败如实回）。 */
+    fun askVideoUrl(
+        session: ProviderSession,
+        transport: WireTransport,
+        url: String,
+        instruction: String,
+    ): Outcome {
+        val request = VisionTurns.buildVideoUrlRequest(session, url, instruction)
+            ?: return Outcome.Failed(
+                "当前模型协议（${session.protocol}）不支持服务端视频输入；把聊天模型切到 Gemini 系再试。" +
+                    "本工具不偷偷降级成本地下载抽帧。"
+            )
+        return sendAndExtract(session, transport, request)
+    }
 }

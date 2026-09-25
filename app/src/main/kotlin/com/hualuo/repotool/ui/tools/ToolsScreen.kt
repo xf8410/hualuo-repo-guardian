@@ -60,7 +60,7 @@ fun ToolsScreen(state: AppUiState) {
         Spacer(Modifier.height(8.dp))
 
         // 视频理解卡（自含：picker/开始/停止/结果都在卡内；主线程零视频工作）
-        VideoUnderstandingCard(state)
+        VideoUnderstandingCard(state.video)
 
         HCard {
             CardTitle("网页搜索（免费档 DuckDuckGo）")
