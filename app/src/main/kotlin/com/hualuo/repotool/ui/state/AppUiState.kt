@@ -350,14 +350,22 @@ class AppUiState(
         videoNote = "计划 ${videoFrameTimes.size} 帧，选好后点「开始理解」"
     }
 
-    /** 界面层抽完帧喂回来（base64 顺序对齐 [videoFrameTimes]），立刻开跑分批理解。 */
-    fun onVideoFramesReady(framesBase64: List<String>) {
+    /**
+     * 界面层抽完帧喂回来（与 [videoFrameTimes] 等长、同序；抽不出的位是 null），
+     * 立刻开跑分批理解。整条全空才拒——个别帧抽不出不该作废整段视频。
+     */
+    fun onVideoFramesReady(framesRaw: List<String?>) {
         if (videoBusy) return
-        if (framesBase64.isEmpty()) {
+        // 对齐配对：只留真抽出来的（时间点+帧一起留，批次对应关系不乱）
+        val pairs = videoFrameTimes.mapIndexed { i, t -> t to framesRaw.getOrNull(i) }
+            .filter { it.second != null }
+        if (pairs.isEmpty()) {
             videoNote = "一帧都没抽出来：视频可能损坏或格式不支持"
             return
         }
-        videoFrames = framesBase64
+        val times = pairs.map { it.first }
+        val frames = pairs.map { requireNotNull(it.second) }
+        videoFrames = frames
         videoBusy = true
         videoProgress = null
         videoNote = null
@@ -369,20 +377,18 @@ class AppUiState(
                 return@Thread
             }
             val transport = com.hualuo.engine.api.UrlConnTransport()
-            val batches = com.hualuo.engine.vision.VideoPlan.batches(videoFrameTimes)
+            val batches = com.hualuo.engine.vision.VideoPlan.batches(times)
             val notes = mutableListOf<String>()
             try {
-                batches.forEachIndexed { bi, times ->
+                batches.forEachIndexed { bi, batchTimes ->
                     videoProgress = "读第 ${bi + 1}/${batches.size} 批画面"
-                    // 帧顺序与时间点一一对应：批内帧 = 时间点切片对应的 base64
-                    val batchFrames = times.mapIndexedNotNull { i, t ->
-                        val idx = videoFrameTimes.indexOf(t)
-                        framesBase64.getOrNull(idx)
+                    val batchFrames = batchTimes.mapNotNull { t ->
+                        val idx = times.indexOf(t)
+                        frames.getOrNull(idx)
                     }
-                    val images = batchFrames.ifEmpty { framesBase64.take(times.size) }
                     val outcome = com.hualuo.engine.vision.VisionExec.ask(
-                        session, transport, images,
-                        com.hualuo.engine.vision.VideoPlan.describePrompt(bi, batches.size, times),
+                        session, transport, batchFrames,
+                        com.hualuo.engine.vision.VideoPlan.describePrompt(bi, batches.size, batchTimes),
                     )
                     when (outcome) {
                         is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> notes += outcome.text
