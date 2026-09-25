@@ -37,6 +37,7 @@ fun buildGithubToolRegistry(
     prConfirmer: com.hualuo.engine.toolcalls.PrConfirmer? = null,
     memoryStore: com.hualuo.engine.memory.MemoryStore? = null,
     sessionStore: com.hualuo.engine.store.SessionStore? = null,
+    webSearchEnabled: (() -> Boolean)? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -64,6 +65,13 @@ fun buildGithubToolRegistry(
     // 对话检索族（M4 第三刀）：吃会话仓本体——会话库没建成（store=null）检索工具就不存在，
     // 「搜不到」比「工具在但永远空手」诚实
     com.hualuo.engine.toolcalls.RagTool.register(registry, sessionStore)
+    // 网页族（M4 第五刀）：设置开关关掉=清单里消失（运行时可见性，翻回立刻回来）
+    com.hualuo.engine.toolcalls.WebTool.register(
+        registry,
+        com.hualuo.engine.search.WebSearchClient(),
+        fetcher = { url -> com.hualuo.engine.search.WebSearchClient.defaultFetcher(url) },
+        visibleIf = webSearchEnabled,
+    )
     if (sandboxConfirmer != null && sandboxRootDir != null) {
         val root = sandboxRootDir
         SandboxToolFamily.register(
