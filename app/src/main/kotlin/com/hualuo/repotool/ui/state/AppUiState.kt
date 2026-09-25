@@ -310,9 +310,16 @@ class AppUiState(
 
     /** 视频理解状态舱（编排细节在 VideoUnderstandingState，红线三拆件）。 */
     val video = VideoUnderstandingState(
+        watchInboxDir = watchInboxDir,
+        watchFramesDir = watchFramesDir,
         visionSession = { ModelSettingsRuntime.current()?.sessionFor(currentModel) },
         currentModelName = { currentModel },
     )
+
+    // ── APK 检查（560 清单 121-160 域；引擎全测，这里只存文本收场） ──
+
+    var apkChecking by mutableStateOf(false)
+    var apkReport by mutableStateOf<String?>(null)
 
     // ── 仓库CI（GitHub 只读） ───────────────────────────────────────────────
 

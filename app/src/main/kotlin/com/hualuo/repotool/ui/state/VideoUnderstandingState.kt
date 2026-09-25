@@ -19,10 +19,39 @@ import com.hualuo.engine.api.UrlConnTransport
  * 但执行时刻由这里定。
  */
 class VideoUnderstandingState(
+    /** 视频库目录（录屏本体+manifest 账本）；null = 库功能不接。 */
+    private val watchInboxDir: java.io.File?,
+    /** 帧缓存目录。 */
+    private val watchFramesDir: java.io.File?,
     /** 视觉会话来源：聊天当前选定模型的会话；null = 解析不出（如实报）。 */
     private val visionSession: () -> com.hualuo.engine.api.ProviderSession?,
     private val currentModelName: () -> String,
 ) {
+
+    // ── 视频库导入编排（抽帧在界面层做——MediaMetadataRetriever 是 Android 类） ──
+
+    var videoImporting by mutableStateOf(false)
+        private set
+    var videoImportNote by mutableStateOf<String?>(null)
+        private set
+    /** 库列表缓存（一行概览）；导入完成/删除后 refreshVideoLibrary() 刷。 */
+    var videoLibraryCache by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** 刷库列表（纯 JVM 读 manifest 账本）。 */
+    fun refreshVideoLibrary() {
+        val dir = watchInboxDir ?: return
+        videoLibraryCache = com.hualuo.engine.toolcalls.VideoTool.readManifests(dir).map { m ->
+            "${m.name}（${m.durationMs / 1000}s，${m.frames.size} 帧）"
+        }
+    }
+
+    /** 导入编排的口子：界面层后台线程做拷贝/抽帧/写账，只把进度与收场报进来。 */
+    fun setVideoImporting(busy: Boolean, note: String? = null) {
+        videoImporting = busy
+        if (note != null) videoImportNote = note
+        if (!busy) refreshVideoLibrary()
+    }
 
     /** SAF 选中的视频（uri 字符串；纯 JVM 状态不碰 Android 类）。 */
     var videoUri by mutableStateOf<String?>(null)
