@@ -309,11 +309,13 @@ class AppUiState(
 
     // ── 视频理解（看视频刀：抽帧计划+分批问答+汇总，全编排纯 JVM） ────────────
 
-    /** 视觉会话来源（app 侧注入多提供商设置）；拿不到 = 没模型可用，如实报。 */
+    /**
+     * 视觉会话来源：**用聊天当前选定的模型**（不拿「第一个启用模型」碰运气——
+     * 当前模型什么协议就发什么协议，不支持视觉（Ollama）就如实报错让用户换，
+     * 不许静默换一个别的模型装作没事）。
+     */
     private val visionSession: () -> com.hualuo.engine.api.ProviderSession? = {
-        ModelSettingsRuntime.current()?.selectedModels()?.firstOrNull()?.id?.let { id ->
-            ModelSettingsRuntime.current()?.sessionFor(id)
-        }
+        ModelSettingsRuntime.current()?.sessionFor(currentModel)
     }
 
     /** SAF 选中的视频（uri 字符串；纯 JVM 状态不碰 Android 类）。 */
@@ -350,78 +352,129 @@ class AppUiState(
         videoNote = "计划 ${videoFrameTimes.size} 帧，选好后点「开始理解」"
     }
 
+    /** 用户点了停止：批与批之间生效；卡住的请求靠 transport.cancel() 打断。 */
+    @Volatile
+    private var videoCancelRequested = false
+
+    /** 当前跑着的 transport（停止按钮用它打断卡住的请求；空闲时 null）。 */
+    @Volatile
+    private var videoActiveTransport: com.hualuo.engine.api.UrlConnTransport? = null
+
     /**
-     * 界面层抽完帧喂回来（与 [videoFrameTimes] 等长、同序；抽不出的位是 null），
-     * 立刻开跑分批理解。整条全空才拒——个别帧抽不出不该作废整段视频。
+     * 开始理解：**整条链（抽帧+分批+汇总）都在这一条后台线程里**——
+     * 抽帧函数由界面层注入（MediaMetadataRetriever 是 Android 类，进不了状态层），
+     * 但执行时刻由这里定，绝不让它在主线程跑（审查逮出的 P0：原版注释写后台实际同步）。
+     *
+     * 时长无效（没读出来）直接拒：单帧瞎抽不是「降级」是浪费 token，按钮层也要同判禁用。
      */
-    fun onVideoFramesReady(framesRaw: List<String?>) {
+    fun startVideoUnderstanding(extractFrames: (List<Long>) -> List<String?>) {
         if (videoBusy) return
-        // 对齐配对：只留真抽出来的（时间点+帧一起留，批次对应关系不乱）
-        val pairs = videoFrameTimes.mapIndexed { i, t -> t to framesRaw.getOrNull(i) }
-            .filter { it.second != null }
-        if (pairs.isEmpty()) {
-            videoNote = "一帧都没抽出来：视频可能损坏或格式不支持"
+        if (videoDurationMs <= 0 || videoFrameTimes.isEmpty()) {
+            videoNote = "视频时长没读出来，没法定抽帧计划：重新选一个视频"
             return
         }
-        val times = pairs.map { it.first }
-        val frames = pairs.map { requireNotNull(it.second) }
-        videoFrames = frames
         videoBusy = true
-        videoProgress = null
+        videoCancelRequested = false
+        videoProgress = "抽帧中（${videoFrameTimes.size} 帧）"
         videoNote = null
+        videoBatchNotes = emptyList()
+        videoSummary = null
+        val plannedTimes = videoFrameTimes
         Thread({
-            val session = visionSession()
-            if (session == null) {
-                videoBusy = false
-                videoNote = "没有可用的模型会话：先去设置-提供商里配好模型"
-                return@Thread
-            }
-            val transport = com.hualuo.engine.api.UrlConnTransport()
-            val batches = com.hualuo.engine.vision.VideoPlan.batches(times)
-            val notes = mutableListOf<String>()
             try {
+                // 1) 抽帧（与计划等长同序；个别位 null）
+                val raw = runCatching { extractFrames(plannedTimes) }.getOrElse { e ->
+                    finishVideo("抽帧失败：${e.message ?: e.javaClass.simpleName}")
+                    return@Thread
+                }
+                val pairs = plannedTimes.mapIndexed { i, t -> t to raw.getOrNull(i) }
+                    .filter { it.second != null }
+                if (pairs.isEmpty()) {
+                    finishVideo("一帧都没抽出来：视频可能损坏或格式不支持")
+                    return@Thread
+                }
+                if (videoCancelRequested) {
+                    finishVideo("已停止（抽帧阶段）")
+                    return@Thread
+                }
+                val times = pairs.map { it.first }
+                val frames = pairs.map { requireNotNull(it.second) }
+                videoFrames = frames
+
+                // 2) 会话
+                val session = visionSession()
+                if (session == null) {
+                    finishVideo("当前模型「$currentModel」解析不出可用的提供商会话：去设置-提供商里配好，或换一个支持视觉的模型")
+                    return@Thread
+                }
+                val transport = com.hualuo.engine.api.UrlConnTransport()
+                videoActiveTransport = transport
+
+                // 3) 分批读（批与批之间看停止位；卡住的请求 transport.cancel 打断）
+                val batches = com.hualuo.engine.vision.VideoPlan.batches(times)
+                val done = mutableListOf<Pair<List<Long>, String>>() // 成功批：时间点+描述（汇总要带批标签）
                 batches.forEachIndexed { bi, batchTimes ->
+                    if (videoCancelRequested) {
+                        finishVideo("已停止：读完了 ${done.size}/${batches.size} 批（描述都留着）")
+                        return@Thread
+                    }
                     videoProgress = "读第 ${bi + 1}/${batches.size} 批画面"
                     val batchFrames = batchTimes.mapNotNull { t ->
                         val idx = times.indexOf(t)
                         frames.getOrNull(idx)
                     }
-                    val outcome = com.hualuo.engine.vision.VisionExec.ask(
+                    when (val outcome = com.hualuo.engine.vision.VisionExec.ask(
                         session, transport, batchFrames,
                         com.hualuo.engine.vision.VideoPlan.describePrompt(bi, batches.size, batchTimes),
-                    )
-                    when (outcome) {
-                        is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> notes += outcome.text
+                    )) {
+                        is com.hualuo.engine.vision.VisionExec.Outcome.Ok ->
+                            done += batchTimes to outcome.text
                         is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
-                            videoBusy = false
-                            videoProgress = null
-                            videoBatchNotes = notes.toList()
-                            videoNote = "第 ${bi + 1} 批没读出来：${outcome.reason}"
+                            videoBatchNotes = done.map { it.second }
+                            finishVideo("第 ${bi + 1} 批没读出来：${outcome.reason}（前 ${done.size} 批描述已保留）")
                             return@Thread
                         }
                     }
                 }
-                videoBatchNotes = notes.toList()
+                videoBatchNotes = done.map { it.second }
+
+                // 4) 汇总：每批带【批号+时间范围】标签，汇总模型才建得准时间线（审查第 3 条）
                 videoProgress = "汇总中"
-                val summary = com.hualuo.engine.vision.VisionExec.askText(
+                val labeled = done.mapIndexed { di, (ts, note) ->
+                    "【第 ${di + 1} 批 · ${ts.first() / 1000.0}s 到 ${ts.last() / 1000.0}s】\n$note"
+                }.joinToString("\n\n")
+                when (val summary = com.hualuo.engine.vision.VisionExec.askText(
                     session, transport,
-                    com.hualuo.engine.vision.VideoPlan.summarizePrompt(notes.joinToString("\n\n"), null),
-                )
-                videoBusy = false
-                videoProgress = null
-                when (summary) {
-                    is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> videoSummary = summary.text
-                    is com.hualuo.engine.vision.VisionExec.Outcome.Failed -> {
-                        // 汇总挂了不白跑：批描述已在手，如实说明
-                        videoNote = "画面都读完了，汇总没成：${summary.reason}"
+                    com.hualuo.engine.vision.VideoPlan.summarizePrompt(labeled, null),
+                )) {
+                    is com.hualuo.engine.vision.VisionExec.Outcome.Ok -> {
+                        videoSummary = summary.text
+                        finishVideo(null)
                     }
+                    is com.hualuo.engine.vision.VisionExec.Outcome.Failed ->
+                        finishVideo("画面都读完了，汇总没成：${summary.reason}")
                 }
             } catch (e: Exception) {
-                videoBusy = false
-                videoProgress = null
-                videoNote = "执行中断：${e.message ?: e.javaClass.simpleName}"
+                finishVideo("执行中断：${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                videoActiveTransport = null
             }
         }, "hualuo-video-watch").start()
+    }
+
+    /** 停止按钮：置停止位 + 打断卡在网络上的请求。收尾统一走 [finishVideo]。 */
+    fun stopVideo() {
+        if (!videoBusy) return
+        videoCancelRequested = true
+        videoActiveTransport?.cancel()
+        videoProgress = "停止中…"
+    }
+
+    /** 统一收尾：忙灯灭、进度清、给一句人话（null = 不追加说明）。 */
+    private fun finishVideo(note: String?) {
+        videoBusy = false
+        videoProgress = null
+        if (note != null) videoNote = note
     }
 
     /** 选了打不开的文件时，界面层给一句人话说明（计划照立，时长为 0）。 */

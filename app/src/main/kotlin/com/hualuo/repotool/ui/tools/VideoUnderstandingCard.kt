@@ -1,5 +1,6 @@
 package com.hualuo.repotool.ui.tools
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -12,8 +13,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,50 +30,63 @@ import com.hualuo.repotool.ui.theme.SubInk
 import com.hualuo.repotool.ui.theme.WarnAmber
 
 /**
- * 视频理解卡（看视频功能第一刀的界面）：选录屏 -> 定抽帧计划 -> 抽帧 -> 分批视觉问答 -> 汇总。
+ * 视频理解卡（看视频功能第一刀的界面）：选录屏 -> 定抽帧计划 -> 开始理解 -> 汇总。
  *
- * 职责只两件：把 SAF 选来的 uri/时长交给状态层（[AppUiState.planVideo]）；
- * 「开始理解」时按状态层给的时间点在后台抽帧（[AppUiState.onVideoFramesReady]）。
- * 编排、请求、汇总全在状态层与引擎件——界面只出力不拿主意。
+ * 主线程零视频工作（审查 P0）：点「开始理解」只是把抽帧函数递给状态层，
+ * 抽帧/分批/汇总全在状态层自己的后台线程排。
+ *
+ * 交互事实：
+ *  - 时长没读出来 = 「开始理解」禁用（单帧瞎抽不是降级，是浪费 token——审查第 1 条次要项）；
+ *  - 跑着的时候只有「停止」能点（置停止位 + 打断卡住的请求，审查第 5 条）；
+ *  - 汇总/批描述出来了可复制；清掉重来随时可点（忙时不许）。
  */
 @Composable
-fun VideoUnderstandingCard(
-    state: AppUiState,
-    pickVideo: androidx.activity.compose.ManagedActivityResultLauncher<Array<String>, android.net.Uri?>,
-    onStart: (List<Long>) -> Unit,
-) {
+fun VideoUnderstandingCard(state: AppUiState) {
+    val context = LocalContext.current
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val duration = AndroidVideoFrames.durationMs(context, uri)
+            state.planVideo(uri.toString(), duration)
+            if (duration <= 0) state.resetVideoNoteTo("读不到时长：这个文件可能不是视频（或已失效）")
+        }
+    }
+
     HCard {
-        CardTitle("视频理解（看画面读攻略）")
-        Text(
-            "选一段录屏，AI 均匀抽帧逐批看，最后给画面流水与攻略要点。文字（选项/数值/提示）会原样读出。",
-            fontSize = 12.sp, color = SubInk,
-        )
-        Spacer(Modifier.height(8.dp))
-        Row {
-            Box2Button(
-                label = if (state.videoUri == null) "选视频" else "换一段",
-                enabled = !state.videoBusy,
-            ) { pickVideo.launch(arrayOf("video/*")) }
-            Spacer(Modifier.width(8.dp))
-            if (state.videoUri != null) {
-                Box2Button(
-                    label = if (state.videoBusy) "看着…" else "开始理解",
-                    enabled = !state.videoBusy && state.videoFrameTimes.isNotEmpty(),
-                    accent = true,
-                ) { onStart(state.videoFrameTimes) }
+        CardTitle("视频理解（选录屏，读画面与文字，出攻略总结）")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box2Button(if (state.videoUri == null) "选视频" else "换视频", enabled = !state.videoBusy) {
+                picker.launch(arrayOf("video/*"))
             }
+            Spacer(Modifier.width(8.dp))
+            val canStart = state.videoUri != null && state.videoDurationMs > 0 && state.videoFrameTimes.isNotEmpty()
+            Box2Button(
+                if (state.videoBusy) "跑着…" else "开始理解",
+                enabled = !state.videoBusy && canStart,
+                accent = canStart && !state.videoBusy,
+            ) {
+                val uri = state.videoUri ?: return@Box2Button
+                // 只递抽帧函数；抽帧/分批/汇总全在状态层后台线程（主线程不做视频工作）
+                state.startVideoUnderstanding { times ->
+                    AndroidVideoFrames.extractFrames(context, Uri.parse(uri), times)
+                }
+            }
+            if (state.videoBusy) {
+                Spacer(Modifier.width(8.dp))
+                Box2Button("停止") { state.stopVideo() }
+            }
+        }
+        state.videoProgress?.let { p ->
+            Spacer(Modifier.height(6.dp))
+            Text(p, fontSize = 12.sp, color = Accent, fontWeight = FontWeight.SemiBold)
         }
         if (state.videoUri != null) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "时长 ${(state.videoDurationMs + 999) / 1000} 秒，计划抽 ${state.videoFrameTimes.size} 帧" +
-                    "（分 ${(state.videoFrameTimes.size + com.hualuo.engine.vision.VideoPlan.PER_BATCH - 1) / com.hualuo.engine.vision.VideoPlan.PER_BATCH} 批读）",
-                fontSize = 12.sp, color = SubInk,
+                "时长 ${(state.videoDurationMs + 999) / 1000}s · 计划 ${state.videoFrameTimes.size} 帧 · " +
+                    "用当前模型「${state.currentModel}」（不支持视觉会在第一批就报错，换模型重跑即可）",
+                fontSize = 11.5.sp,
+                color = SubInk,
             )
-        }
-        state.videoProgress?.let { p ->
-            Spacer(Modifier.height(6.dp))
-            Text(p, fontSize = 12.sp, color = Accent)
         }
         state.videoNote?.let { note ->
             Spacer(Modifier.height(6.dp))
@@ -80,15 +96,26 @@ fun VideoUnderstandingCard(
             Spacer(Modifier.height(8.dp))
             Text("各批画面记录", fontSize = 12.sp, color = SubInk, fontWeight = FontWeight.SemiBold)
             state.videoBatchNotes.forEachIndexed { i, note ->
-                Spacer(Modifier.height(4.dp))
-                Text("第 ${i + 1} 批：$note", fontSize = 12.sp, color = Ink)
+                Text("— 第 ${i + 1} 批 —", fontSize = 10.5.sp, color = SubInk)
+                Text(note, fontSize = 12.sp, color = Ink)
             }
         }
         state.videoSummary?.let { summary ->
             Spacer(Modifier.height(8.dp))
             Text("总结", fontSize = 12.sp, color = SubInk, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
             Text(summary, fontSize = 13.sp, color = Ink)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "复制总结",
+                fontSize = 12.sp,
+                color = Accent,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clickable {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("视频理解总结", summary))
+                },
+            )
         }
         if (state.videoUri != null && !state.videoBusy) {
             Spacer(Modifier.height(8.dp))

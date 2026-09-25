@@ -44,6 +44,10 @@ object AndroidVideoFrames {
                     val scaled = scaleDown(frame, maxWidthPx)
                     val sink = ByteSink()
                     scaled.compress(Bitmap.CompressFormat.JPEG, 85, sink)
+                    // 用完即收（审查第 4 条）：低内存设备连抽十帧别攒着一堆 native 位图。
+                    // recycle 幂等；createScaledBitmap 可能原样返回 src，回收前判同。
+                    if (scaled !== frame) scaled.recycle()
+                    frame.recycle()
                     Base64.encodeToString(sink.toBytes(), Base64.NO_WRAP)
                 } catch (_: Exception) {
                     null
