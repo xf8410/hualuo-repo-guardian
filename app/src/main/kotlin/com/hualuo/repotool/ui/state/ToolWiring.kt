@@ -41,6 +41,7 @@ fun buildGithubToolRegistry(
     skillStore: com.hualuo.engine.memory.MemoryStore? = null,
     imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
     imageGenPersist: ((ByteArray, String) -> String)? = null,
+    videoUrlSession: (() -> com.hualuo.engine.api.ProviderSession?)? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -77,6 +78,10 @@ fun buildGithubToolRegistry(
     )
     // 技能族（M4 第六刀）：复用 MemoryStore（skill_db，无活动记忆文件）；不注入不注册
     com.hualuo.engine.toolcalls.SkillTool.register(registry, skillStore)
+    // 服务端视频 URL 分析（看视频刀第二件）：给会话来源才注册；协议不符执行侧如实拒
+    if (videoUrlSession != null) {
+        com.hualuo.engine.toolcalls.VideoUrlTool.register(registry, videoUrlSession)
+    }
     // 图像生成（M4 第七刀）：config+persist 都给才注册；钥匙没配=不可见（可见性现问现答）
     if (imageGenConfig != null && imageGenPersist != null) {
         com.hualuo.engine.toolcalls.ImageGenTool.register(

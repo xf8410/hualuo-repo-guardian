@@ -24,8 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,20 +51,6 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 @Composable
 fun ToolsScreen(state: AppUiState) {
     val context = LocalContext.current
-
-    // 看视频刀：SAF 选视频。选完拿时长、定抽帧计划；抽帧在「开始理解」里做（后台线程）
-    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val duration = AndroidVideoFrames.durationMs(context, uri)
-            if (duration <= 0) {
-                state.planVideo(uri.toString(), 0)
-                state.resetVideoNoteTo("读不到时长：这个文件可能不是视频（或已失效）")
-            } else {
-                state.planVideo(uri.toString(), duration)
-            }
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -75,11 +59,8 @@ fun ToolsScreen(state: AppUiState) {
     ) {
         Spacer(Modifier.height(8.dp))
 
-        VideoUnderstandingCard(state, videoPicker) { times ->
-            // 后台抽帧：抽完喂回状态层开跑分批理解
-            val frames = AndroidVideoFrames.extractFrames(context, Uri.parse(state.videoUri!!), times)
-            state.onVideoFramesReady(frames)
-        }
+        // 视频理解卡（自含：picker/开始/停止/结果都在卡内；主线程零视频工作）
+        VideoUnderstandingCard(state.video)
 
         HCard {
             CardTitle("网页搜索（免费档 DuckDuckGo）")
