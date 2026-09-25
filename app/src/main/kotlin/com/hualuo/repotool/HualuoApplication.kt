@@ -52,7 +52,27 @@ class HualuoApplication : Application() {
     }
 
     val uiState: AppUiState by lazy {
-        AppUiState(uiBundle.persistence, uiBundle.store, writeGate, memoryStore, skillStore)
+        AppUiState(
+            uiBundle.persistence,
+            uiBundle.store,
+            writeGate,
+            memoryStore,
+            skillStore,
+            imageGenConfig = {
+                com.hualuo.engine.toolcalls.ImageGenConfig(
+                    apiKey = uiBundle.persistence.load(com.hualuo.repotool.ui.state.UiKeys.IMAGE_GEN_KEY).orEmpty(),
+                    baseUrl = uiBundle.persistence.load(com.hualuo.repotool.ui.state.UiKeys.IMAGE_GEN_BASE_URL).orEmpty(),
+                    model = uiBundle.persistence.load(com.hualuo.repotool.ui.state.UiKeys.IMAGE_GEN_MODEL).orEmpty(),
+                    size = uiBundle.persistence.load(com.hualuo.repotool.ui.state.UiKeys.IMAGE_GEN_SIZE).orEmpty(),
+                )
+            },
+            imageGenPersist = { bytes, prefix ->
+                val dir = File(filesDir, "tool_images").apply { mkdirs() }
+                val out = File(dir, "$prefix-${System.currentTimeMillis()}.png")
+                out.writeBytes(bytes)
+                out.absolutePath
+            },
+        )
     }
 
     private val startupNotice = OnceNotice { uiBundle.notice }
