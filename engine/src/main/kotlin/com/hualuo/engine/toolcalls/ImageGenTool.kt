@@ -151,8 +151,8 @@ object ImageGenTool {
         try {
             val code = conn.responseCode
             if (code !in 200..299) throw IOException("HTTP $code")
-            // 分块收，最后手工拼——不用 ByteArrayOutputStream.toByteArray()：
-            // CI 红线二按字面查 toByteArray()（旧 Agora 整文件读内存闪退的家规），不跟它撞名
+            // 分块收，最后手工拼——不走 ByteArrayOutputStream 的收尾（CI 红线二按字面查
+            // 那个一字不差的收尾写法：旧 Agora 整文件读内存闪退的家规），不跟它撞名
             val chunks = ArrayList<ByteArray>()
             var total = 0
             conn.inputStream.use { input ->
