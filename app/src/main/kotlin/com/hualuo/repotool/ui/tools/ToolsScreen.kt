@@ -64,6 +64,10 @@ fun ToolsScreen(state: AppUiState) {
 
         Spacer(Modifier.height(10.dp))
 
+        ApkCheckCard(state)
+
+        Spacer(Modifier.height(10.dp))
+
         HCard {
             CardTitle("网页搜索（免费档 DuckDuckGo）")
             Row(verticalAlignment = Alignment.CenterVertically) {

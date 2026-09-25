@@ -71,7 +71,7 @@ object VideoImporter {
                     out.writeBytes(sink.toBytes())
                     rels += rel
                 }
-                state.setVideoImporting(true, "抽帧 ${i + 1}/${times.size}")
+                state.video.setVideoImporting(true, "抽帧 ${i + 1}/${times.size}")
             }
             if (rels.isEmpty()) return null
             val manifest = File(inbox, "${videoFile.name}.manifest.json")

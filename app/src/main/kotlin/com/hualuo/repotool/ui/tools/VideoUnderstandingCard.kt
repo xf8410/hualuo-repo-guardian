@@ -36,22 +36,22 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 fun VideoUnderstandingCard(state: AppUiState) {
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && !state.videoImporting && state.watchInboxDir != null && state.watchFramesDir != null) {
+        if (uri != null && !state.video.videoImporting && state.watchInboxDir != null && state.watchFramesDir != null) {
             val inbox = state.watchInboxDir
             val frames = state.watchFramesDir
-            state.setVideoImporting(true, "拷贝进库…")
+            state.video.setVideoImporting(true, "拷贝进库…")
             Thread({
                 val copied = VideoImporter.copyIn(context, uri, inbox, queryDisplayName(context, uri))
                 if (copied == null) {
-                    state.setVideoImporting(false, "拷贝失败：文件读不动")
+                    state.video.setVideoImporting(false, "拷贝失败：文件读不动")
                     return@Thread
                 }
                 val manifest = VideoImporter.import(state, copied, frames, inbox)
                 if (manifest == null) {
                     copied.delete()
-                    state.setVideoImporting(false, "导入失败：抽不出帧（文件损坏或不是视频）")
+                    state.video.setVideoImporting(false, "导入失败：抽不出帧（文件损坏或不是视频）")
                 } else {
-                    state.setVideoImporting(false, "已入库：${copied.name}——现在可以在对话里让 AI 看它了")
+                    state.video.setVideoImporting(false, "已入库：${copied.name}——现在可以在对话里让 AI 看它了")
                 }
             }, "hualuo-video-import").start()
         }
@@ -66,23 +66,23 @@ fun VideoUnderstandingCard(state: AppUiState) {
         Spacer(Modifier.height(8.dp))
         Row {
             Box2Button(
-                if (state.videoImporting) "导入中…" else "导入录屏",
-                enabled = !state.videoImporting,
-                accent = !state.videoImporting,
+                if (state.video.videoImporting) "导入中…" else "导入录屏",
+                enabled = !state.video.videoImporting,
+                accent = !state.video.videoImporting,
             ) {
                 picker.launch(arrayOf("video/*"))
             }
         }
-        state.videoImportNote?.let { note ->
+        state.video.videoImportNote?.let { note ->
             Spacer(Modifier.height(6.dp))
-            Text(note, fontSize = 12.sp, color = if (state.videoImporting) WarnAmber else SubInk)
+            Text(note, fontSize = 12.sp, color = if (state.video.videoImporting) WarnAmber else SubInk)
         }
-        if (state.videoLibraryCache.isNotEmpty()) {
+        if (state.video.videoLibraryCache.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            state.videoLibraryCache.forEach { line ->
+            state.video.videoLibraryCache.forEach { line ->
                 Text("· $line", fontSize = 12.sp, color = Ink)
             }
-        } else if (!state.videoImporting) {
+        } else if (!state.video.videoImporting) {
             Spacer(Modifier.height(6.dp))
             Text("库还是空的", fontSize = 12.sp, color = SubInk)
         }
