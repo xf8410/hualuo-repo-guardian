@@ -18,6 +18,7 @@ import com.hualuo.repotool.ui.data.RETRY_COSTLY_DEFAULT
 import com.hualuo.repotool.ui.data.RETRY_COSTLY_KEY
 import com.hualuo.repotool.ui.model.Conv
 import com.hualuo.repotool.ui.model.NavTab
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -82,6 +83,10 @@ class AppUiState(
     private val imageGenConfig: (() -> com.hualuo.engine.toolcalls.ImageGenConfig?)? = null,
     /** 图像字节落盘（字节、文件名前缀）到保存路径；null = 不注册图像生成。 */
     private val imageGenPersist: ((ByteArray, String) -> String)? = null,
+    /** 看视频的库目录（录屏本体+manifest）；null = 不注册看视频工具族。 */
+    val watchInboxDir: File? = null,
+    /** 帧缓存目录（导入时抽好的 JPEG）。 */
+    val watchFramesDir: File? = null,
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
@@ -219,8 +224,22 @@ class AppUiState(
             imageGenConfig = imageGenConfig,
             imageGenPersist = imageGenPersist,
             videoUrlSession = { ModelSettingsRuntime.current()?.sessionFor(currentModel) },
+            watchInboxDir = watchInboxDir,
+            watchFramesDir = watchFramesDir,
+            visionSession = ::visionSessionOrDefault,
         ),
     )
+
+    /**
+     * 看视频的「眼睛」会话：设置里填的眼睛模型 id（provider:model）。
+     * 没填/解析不出 = null（工具两件不注册）。与主对话用什么模型无关——
+     * 纯文本主模型调 watch_video，眼睛读帧出文字给它。
+     */
+    private fun visionSessionOrDefault(): com.hualuo.engine.api.ProviderSession? {
+        val id = persist.load(UiKeys.VISION_MODEL)?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return ModelSettingsRuntime.current()?.sessionFor(id)
+    }
 
     /** 输入区发送钮的忙灯：真在跑才亮，不再是个能手动点着玩的演示布尔。 */
     val busy: Boolean get() = chat.busy
@@ -308,13 +327,8 @@ class AppUiState(
         }, "hualuo-web-search").start()
     }
 
-    /** 视频理解状态舱（编排细节在 VideoUnderstandingState，红线三拆件）。 */
-    val video = VideoUnderstandingState(
-        watchInboxDir = watchInboxDir,
-        watchFramesDir = watchFramesDir,
-        visionSession = { ModelSettingsRuntime.current()?.sessionFor(currentModel) },
-        currentModelName = { currentModel },
-    )
+    /** 视频库状态舱（编排细节在 VideoUnderstandingState，红线三拆件）。 */
+    val video = VideoUnderstandingState(watchInboxDir = watchInboxDir)
 
     // ── APK 检查（560 清单 121-160 域；引擎全测，这里只存文本收场） ──
 

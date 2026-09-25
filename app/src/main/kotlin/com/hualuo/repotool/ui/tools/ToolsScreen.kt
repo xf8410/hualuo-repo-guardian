@@ -51,6 +51,7 @@ import com.hualuo.repotool.ui.theme.WarnAmber
 @Composable
 fun ToolsScreen(state: AppUiState) {
     val context = LocalContext.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -59,8 +60,9 @@ fun ToolsScreen(state: AppUiState) {
     ) {
         Spacer(Modifier.height(8.dp))
 
-        // 视频理解卡（自含：picker/开始/停止/结果都在卡内；主线程零视频工作）
-        VideoUnderstandingCard(state.video)
+        VideoUnderstandingCard(state)
+
+        Spacer(Modifier.height(10.dp))
 
         HCard {
             CardTitle("网页搜索（免费档 DuckDuckGo）")
