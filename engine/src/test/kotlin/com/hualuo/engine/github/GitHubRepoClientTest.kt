@@ -455,7 +455,7 @@ private class RoutingFetch : (String, String?, String?, Int) -> GitHubHttpResult
     override fun invoke(url: String, token: String?, accept: String?, maxChars: Int): GitHubHttpResult {
         calls += url
         return when {
-            url.endsWith("/repos/xulai1001/umaai-rs") ->
+            url.endsWith("/repos/some-owner/some-repo") ->
                 GitHubHttpResult(200, """{"default_branch":"master"}""")
             url.contains("/contents/scripts/_check_color.py") && url.contains("ref=main") ->
                 GitHubHttpResult(404, """{"message":"No commit found for the ref main"}""")
@@ -478,12 +478,12 @@ private class RoutingFetch : (String, String?, String?, Int) -> GitHubHttpResult
 fun `readFile 404 自愈：main 不存在探默认分支 master 重试成功`() {
     val fetch = RoutingFetch()
     val c = GitHubRepoClient(fetch)
-    val out = c.readFile("xulai1001/umaai-rs", "scripts/_check_color.py", "main", "t")
+    val out = c.readFile("some-owner/some-repo", "scripts/_check_color.py", "main", "t")
     assertNull(out.error)
     assertEquals("""print("hello")""", out.text?.trim())
     // 序列钉住：先按 main 打 404，再探默认分支，再用 master 重试——不多打
     assertTrue(fetch.calls.any { it.contains("ref=main") })
-    assertTrue(fetch.calls.any { it.endsWith("/repos/xulai1001/umaai-rs") })
+    assertTrue(fetch.calls.any { it.endsWith("/repos/some-owner/some-repo") })
     assertTrue(fetch.calls.any { it.contains("ref=master") })
 }
 
@@ -491,7 +491,7 @@ fun `readFile 404 自愈：main 不存在探默认分支 master 重试成功`() 
 fun `readFile 404 且 ref 恰是默认分支：不重试，文案带默认分支`() {
     val fetch = RoutingFetch()
     val c = GitHubRepoClient(fetch)
-    val out = c.readFile("xulai1001/umaai-rs", "不存在.py", "master", "t")
+    val out = c.readFile("some-owner/some-repo", "不存在.py", "master", "t")
     assertNotNull(out.error)
     assertTrue("文案要指路默认分支：" + out.error, out.error!!.contains("master"))
 }
@@ -500,7 +500,7 @@ fun `readFile 404 且 ref 恰是默认分支：不重试，文案带默认分支
 fun `browse 404 自愈：同 main 病自动切默认分支`() {
     val fetch = RoutingFetch()
     val c = GitHubRepoClient(fetch)
-    val out = c.browse("xulai1001/umaai-rs", "scripts", "main", "t")
+    val out = c.browse("some-owner/some-repo", "scripts", "main", "t")
     assertNull(out.error)
 }
 
@@ -508,7 +508,7 @@ fun `browse 404 自愈：同 main 病自动切默认分支`() {
 fun `listCommits 404 自愈：切默认分支重取`() {
     val fetch = RoutingFetch()
     val c = GitHubRepoClient(fetch)
-    val out = c.listCommits("xulai1001/umaai-rs", "main", null, "t", 10)
+    val out = c.listCommits("some-owner/some-repo", "main", null, "t", 10)
     assertNull(out.error)
     assertEquals(1, out.commits.size)
 }
