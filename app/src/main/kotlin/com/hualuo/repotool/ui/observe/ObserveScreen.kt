@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -20,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hualuo.engine.observe.ObserveState
@@ -102,6 +106,29 @@ fun ObserveScreen(state: AppUiState) {
             HCard {
                 CardTitle("/status 原文")
                 Text(o.statusBody!!, fontSize = 11.5.sp, lineHeight = 16.sp)
+            }
+        }
+
+        HCard {
+            CardTitle("事件观测流（增量拉取）")
+            Row {
+                TextButton(onClick = { o.pullEvents() }, enabled = !o.eventBusy) {
+                    Text(if (o.eventBusy) "拉取中" else "拉取新事件")
+                }
+                if (o.eventCursor > 0) BadgeChip("游标 #${o.eventCursor}", tone = Tone.Ok)
+            }
+            if (o.eventNote != null) Text(o.eventNote!!, fontSize = 11.5.sp, color = SubInk)
+            if (o.eventRows.isNotEmpty()) {
+                LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp)) {
+                    items(o.eventRows.size) { i ->
+                        Text(
+                            o.eventRows[i],
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        )
+                    }
+                }
             }
         }
 

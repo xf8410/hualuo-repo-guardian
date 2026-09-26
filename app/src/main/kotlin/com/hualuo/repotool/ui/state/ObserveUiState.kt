@@ -93,6 +93,61 @@ class ObserveUiState(
     }
 
     /** 一句话探测账：读数给 UI，不带情绪。 */
+    // ── 事件观测流（560 清单 398；游标增量拉，育成 AI 主线数据） ──
+
+    /** 流水行（原文 JSON，零脱敏；尽力抽 id 前缀，解析失败原文照显）。 */
+    var eventRows by mutableStateOf<List<String>>(emptyList())
+        private set
+    var eventCursor by mutableStateOf(0L)
+        private set
+    var eventNote by mutableStateOf<String?>(null)
+        private set
+    var eventBusy by mutableStateOf(false)
+        private set
+
+    /** 增量拉事件观测：after_id=上次最大 id。原文进行列表，游标推进。 */
+    fun pullEvents() {
+        if (eventBusy) return
+        val client = observeClient() ?: run { eventNote = "桥不在：先探测"; return }
+        eventBusy = true
+        Thread {
+            try {
+                val out = client.get(ObserveClient.ENDPOINT_EVENT_OBSERVATIONS + "?after_id=$eventCursor")
+                if (!out.ok) {
+                    eventNote = out.httpStatus?.let { ObserveClient.httpExplain(it) } ?: (out.error ?: "无响应")
+                    return@Thread
+                }
+                val body = out.body ?: ""
+                var maxId = eventCursor
+                val rows = ArrayList<String>()
+                runCatching {
+                    val el = kotlinx.serialization.json.Json.parseToJsonElement(body)
+                    val arr = el as? kotlinx.serialization.json.JsonArray
+                        ?: (el as? kotlinx.serialization.json.JsonObject)?.get("events") as? kotlinx.serialization.json.JsonArray
+                    arr?.forEach { e ->
+                        val o = e as? kotlinx.serialization.json.JsonObject ?: return@forEach
+                        val id = (o["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+                        if (id > maxId) maxId = id
+                        val type = (o["type"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
+                        rows += (if (id > 0) "#$id " else "") + (if (type.isNotBlank()) "[$type] " else "") + e.toString().take(600)
+                    }
+                }
+                if (rows.isEmpty()) {
+                    eventRows = listOf(body.take(2000))
+                    eventNote = "对端回了原文（形状不是已知事件数组），照显不猜"
+                } else {
+                    eventRows = rows.take(200)
+                    eventNote = "拉到 ${rows.size} 条（游标 $eventCursor 到 $maxId）"
+                    eventCursor = maxId
+                }
+            } catch (e: Exception) {
+                eventNote = "拉取失败：${e.message ?: e::class.java.simpleName}"
+            } finally {
+                eventBusy = false
+            }
+        }.start()
+    }
+
     private fun probeSummary(outcome: ObserveClient.ProbeOutcome): String {
         val h = outcome.health
         val s = outcome.status
