@@ -118,4 +118,7 @@ object UiKeys {
      * 工具内部用这个眼睛模型读帧出文字还给主对话模型。没配=工具不注册。
      */
     const val VISION_MODEL = "vision.model"
+
+    /** SO 观测桥地址（560 清单 361-400 域）。空 = 默认 127.0.0.1:18765。 */
+    const val OBSERVE_BASE = "observe.base"
 }

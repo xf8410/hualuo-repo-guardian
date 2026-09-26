@@ -45,6 +45,8 @@ fun buildGithubToolRegistry(
     watchInboxDir: File? = null,
     watchFramesDir: File? = null,
     visionSession: (() -> com.hualuo.engine.api.ProviderSession?)? = null,
+    observeClientProvider: (() -> com.hualuo.engine.observe.ObserveClient?)? = null,
+    observeLink: com.hualuo.engine.observe.ObserveState? = null,
 ): ToolRegistry = GitHubToolFamily.build(
     loadToken = { persist.load(UiKeys.GITHUB_TOKEN) },
     defaultRepo = { persist.load(UiKeys.GITHUB_REPO) },
@@ -103,6 +105,16 @@ fun buildGithubToolRegistry(
             manifestsDir = watchInboxDir,
             framesDir = watchFramesDir,
             visionSession = visionSession,
+        )
+    }
+    // SO 观测桥族（560 清单 361-400 域）：uma_* 只读工具，桥不在=整族不注册（gated）。
+    // client 每次现造（observeClientProvider 里现场读 ObserveUiState.baseUrl），改地址下一发生效；
+    // 单并发/冷却由 ObserveState 把门——对端是嵌入式 SO，一人一格。
+    observeLink?.let { link ->
+        com.hualuo.engine.observe.UmaTool.register(
+            registry,
+            clientProvider = { observeClientProvider?.invoke() },
+            state = link,
         )
     }
     if (sandboxConfirmer != null && sandboxRootDir != null) {

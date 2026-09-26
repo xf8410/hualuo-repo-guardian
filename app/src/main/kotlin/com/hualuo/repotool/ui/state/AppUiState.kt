@@ -227,6 +227,13 @@ class AppUiState(
             watchInboxDir = watchInboxDir,
             watchFramesDir = watchFramesDir,
             visionSession = ::visionSessionOrDefault,
+            observeClientProvider = {
+                com.hualuo.engine.observe.ObserveClient(
+                    observe.baseUrl,
+                    com.hualuo.engine.api.UrlConnTransport(),
+                )
+            },
+            observeLink = observe.link,
         ),
     )
 
@@ -329,6 +336,9 @@ class AppUiState(
 
     /** 视频库状态舱（编排细节在 VideoUnderstandingState，红线三拆件）。 */
     val video = VideoUnderstandingState(watchInboxDir = watchInboxDir)
+
+    /** SO 观测桥状态舱（560 清单 361-400 域；状态机在引擎件，这里只存收场）。 */
+    val observe = ObserveUiState(persist)
 
     // ── APK 检查（560 清单 121-160 域；引擎全测，这里只存文本收场） ──
 
