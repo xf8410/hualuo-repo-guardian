@@ -67,7 +67,7 @@ class AxmlManifestTest {
         attrs.forEach { tag.write(it) }
 
         val xmlHeader = java.io.ByteArrayOutputStream()
-        xmlHeader.write(le16(0x0003)); xmlHeader.write(le16(8)); xmlHeader.write(le32(8 + pool.size + tag.size()))
+        xmlHeader.write(le16(0x0003)); xmlHeader.write(le16(8)); xmlHeader.write(le32(8 + pool.size() + tag.size()))
         return xmlHeader.toByteArray() + pool.toByteArray() + tag.toByteArray()
     }
 
