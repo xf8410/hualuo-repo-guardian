@@ -449,3 +449,66 @@ class GitHubRepoClientTest {
         assertTrue(log.error!!.contains("空"))
     }
 }
+
+/** ── 404 自愈（旧 Agora 的病：模型爱传 ref=main，撞上 master 仓就 404 来回试错）── */
+
+private class RoutingFetch : (String, String?, String?, Int) -> GitHubHttpResult {
+    val calls = ArrayList<String>()
+    override fun invoke(url: String, token: String?, accept: String?, maxChars: Int): GitHubHttpResult {
+        calls += url
+        return when {
+            url.endsWith("/repos/xulai1001/umaai-rs") ->
+                GitHubHttpResult(200, """{"default_branch":"master"}""")
+            url.contains("/contents/scripts/_check_color.py") && url.contains("ref=main") ->
+                GitHubHttpResult(404, """{"message":"No commit found for the ref main"}""")
+            url.contains("/contents/scripts/_check_color.py") && url.contains("ref=master") ->
+                GitHubHttpResult(200, """{"name":"_check_color.py","path":"scripts/_check_color.py","sha":"abc123","size":50,"encoding":"base64","content":"cHJpbnQoImhlbGxvIikK"}""")
+            url.contains("/contents/scripts/_check_color.py") ->
+                GitHubHttpResult(404, """{"message":"Not Found"}""")
+            url.contains("/commits") && url.contains("sha=main") ->
+                GitHubHttpResult(404, """{"message":"No commit found for the ref main"}""")
+            url.contains("/commits") && url.contains("sha=master") ->
+                GitHubHttpResult(200, """[{"sha":"c1","commit":{"message":"first","author":{"name":"a","date":"2026-09-26"}}}]""")
+            else -> GitHubHttpResult(404, """{"message":"unexpected ${url.takeLast(40)}"}""")
+        }
+    }
+}
+
+@Test
+fun `readFile 404 自愈：main 不存在探默认分支 master 重试成功`() {
+    val fetch = RoutingFetch()
+    val c = GitHubRepoClient(fetch)
+    val out = c.readFile("xulai1001/umaai-rs", "scripts/_check_color.py", "main", "t")
+    assertNull(out.error)
+    assertEquals("hello", out.text?.trim())
+    // 序列钉住：先按 main 打 404，再探默认分支，再用 master 重试——不多打
+    assertTrue(fetch.calls.any { it.contains("ref=main") })
+    assertTrue(fetch.calls.any { it.endsWith("/repos/xulai1001/umaai-rs") })
+    assertTrue(fetch.calls.any { it.contains("ref=master") })
+}
+
+@Test
+fun `readFile 404 且 ref 恰是默认分支：不重试，文案带默认分支`() {
+    val fetch = RoutingFetch()
+    val c = GitHubRepoClient(fetch)
+    val out = c.readFile("xulai1001/umaai-rs", "不存在.py", "master", "t")
+    assertNotNull(out.error)
+    assertTrue("文案要指路默认分支：" + out.error, out.error!!.contains("master"))
+}
+
+@Test
+fun `browse 404 自愈：同 main 病自动切默认分支`() {
+    val fetch = RoutingFetch()
+    val c = GitHubRepoClient(fetch)
+    val out = c.browse("xulai1001/umaai-rs", "scripts", "main", "t")
+    assertNull(out.error)
+}
+
+@Test
+fun `listCommits 404 自愈：切默认分支重取`() {
+    val fetch = RoutingFetch()
+    val c = GitHubRepoClient(fetch)
+    val out = c.listCommits("xulai1001/umaai-rs", "main", null, "t", 10)
+    assertNull(out.error)
+    assertEquals(1, out.commits.size)
+}

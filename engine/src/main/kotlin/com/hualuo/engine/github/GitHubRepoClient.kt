@@ -154,9 +154,19 @@ class GitHubRepoClient(
         val encoded = encodeContentsPath(path)
         val refQuery = if (ref.isNullOrBlank()) "" else "?ref=" + encodeSegment(ref)
         val url = "$GITHUB_API_ROOT/repos/$full/contents" + (if (encoded.isEmpty()) "" else "/$encoded") + refQuery
-        val result = fetch(url, token, null, GITHUB_MAX_BODY_CHARS)
+        var result = fetch(url, token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status == 404 && !ref.isNullOrBlank()) {
+            // 404 自愈：ref 不存在时探默认分支重试（同 readFile，防 main 硬猜）
+            val db = defaultBranchOf(full, token)
+            if (db != null && db != ref) {
+                val retry = fetch("$GITHUB_API_ROOT/repos/$full/contents" + (if (encoded.isEmpty()) "" else "/$encoded") + "?ref=" + encodeSegment(db), token, null, GITHUB_MAX_BODY_CHARS)
+                if (retry.status in 200..299) result = retry
+            }
+        }
         if (result.status == 404) {
-            return GitHubBrowse(emptyList(), 0, "GitHub 说没这个目录（404）：路径或分支不对")
+            val db = defaultBranchOf(full, token)
+            return GitHubBrowse(emptyList(), 0,
+                "GitHub 说没这个目录（404）" + (db?.let { "：这个仓库的默认分支是 $it（你给的 ref 是「$ref」）" } ?: "：路径或分支不对"))
         }
         if (result.status != 200) return GitHubBrowse(emptyList(), 0, httpIssue(result))
         val array = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonArray
@@ -192,9 +202,19 @@ class GitHubRepoClient(
         val refQuery = if (ref.isNullOrBlank()) "" else "?ref=" + encodeSegment(ref)
         val url = "$GITHUB_API_ROOT/repos/$full/contents/$encoded$refQuery"
         // 内容上限 1MB，base64 后约 1.37M 字符，封顶放宽到 1.6M 字符（有界读纪律不破，只是放宽）
-        val result = fetch(url, token, null, 1_600_000)
+        var result = fetch(url, token, null, 1_600_000)
+        if (result.status == 404 && !ref.isNullOrBlank()) {
+            // 404 自愈：给的 ref 可能不存在（模型爱传 main，撞上 master 仓）——探默认分支重试一次
+            val db = defaultBranchOf(full, token)
+            if (db != null && db != ref) {
+                val retry = fetch("$GITHUB_API_ROOT/repos/$full/contents/$encoded?ref=" + encodeSegment(db), token, null, 1_600_000)
+                if (retry.status in 200..299) result = retry
+            }
+        }
         if (result.status == 404) {
-            return GitHubFileContent(cleanPath, null, 0, false, null, false, "GitHub 说没这个文件（404）：路径或分支不对")
+            val db = defaultBranchOf(full, token)
+            return GitHubFileContent(cleanPath, null, 0, false, null, false,
+                "GitHub 说没这个文件或分支（404）" + (db?.let { "：这个仓库的默认分支是 $it（你给的 ref 是「$ref」）" } ?: "：路径或分支不对"))
         }
         if (result.status != 200) {
             return GitHubFileContent(cleanPath, null, 0, false, null, false, httpIssue(result))
@@ -239,6 +259,24 @@ class GitHubRepoClient(
         return GitHubFileContent(cleanPath, decoded, decoded.length, result.truncated, sha, false, null)
     }
 
+    /**
+     * 仓库默认分支（带进程内缓存）。读文件/目录/提交史的 404 自愈就靠它：
+     * 模型习惯性传 ref="main"，撞上 master 仓就 404——这里探出真分支重试，
+     * 不再让模型来回试错烧轮次（旧 Agora 的病，截图为证）。
+     */
+    internal fun defaultBranchOf(full: String, token: String?): String? {
+        defaultBranchCache[full]?.let { return it }
+        val result = fetch("$GITHUB_API_ROOT/repos/$full", token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status != 200) return null
+        val db = ((runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject)
+            ?.get("default_branch") as? JsonPrimitive)?.contentOrNull
+        if (db.isNullOrBlank()) return null
+        defaultBranchCache[full] = db
+        return db
+    }
+
+    private val defaultBranchCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** 分支清单（分支切换的账本）。 */
     fun listBranches(repo: String, token: String?, limit: Int = 50): GitHubBranchList {
         val full = normalizeGitHubRepo(repo)
@@ -270,9 +308,19 @@ class GitHubRepoClient(
         if (!path.isNullOrBlank()) params += "path=" + encodeContentsPath(path)
         params += "per_page=" + limit.coerceIn(1, 100)
         val url = "$GITHUB_API_ROOT/repos/$full/commits?" + params.joinToString("&")
-        val result = fetch(url, token, null, GITHUB_MAX_BODY_CHARS)
+        var result = fetch(url, token, null, GITHUB_MAX_BODY_CHARS)
+        if (result.status == 404 && !ref.isNullOrBlank()) {
+            // 404 自愈：ref 不存在时探默认分支重试（同 readFile，防 main 硬猜）
+            val db = defaultBranchOf(full, token)
+            if (db != null && db != ref) {
+                val retry = fetch("$GITHUB_API_ROOT/repos/$full/commits?sha=" + encodeSegment(db) + "&" + params.dropWhile { it.startsWith("sha=") }.joinToString("&"), token, null, GITHUB_MAX_BODY_CHARS)
+                if (retry.status in 200..299) result = retry
+            }
+        }
         if (result.status == 404) {
-            return GitHubCommitList(emptyList(), 0, "GitHub 说没这个仓库或分支（404）：核对一下")
+            val db = defaultBranchOf(full, token)
+            return GitHubCommitList(emptyList(), 0,
+                "GitHub 说没这个仓库或分支（404）" + (db?.let { "：这个仓库的默认分支是 $it（你给的 ref 是「$ref」）" } ?: "：核对一下"))
         }
         if (result.status != 200) return GitHubCommitList(emptyList(), 0, httpIssue(result))
         val array = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonArray
