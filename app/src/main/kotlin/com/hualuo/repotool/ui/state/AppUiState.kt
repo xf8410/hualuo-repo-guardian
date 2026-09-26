@@ -27,6 +27,7 @@ import kotlin.reflect.KProperty
 /** 文件投递批里的一条：用户选进来的一个文件或一棵目录树。 */
 data class CourierPick(
     /** 屏上显示用的短标签（选文件时是系统选择器给的路径尾段，收集真名在投递时做）。 */
+
     val label: String,
     /** content URI 的字符串形式。状态层不认识安卓的 Uri 类，转回去是根界面那层的事。 */
     val uri: String,
@@ -90,6 +91,10 @@ class AppUiState(
 ) {
 
     // ── 已接持久化 ──────────────────────────────────────────────────────────
+
+    /** SO 观测桥状态舱（560 清单 361-400 域；状态机在引擎件，这里只存收场）。
+     *  放在 toolRegistry 构造调用之前：构造时 observeClientProvider 闭包要捕获它。 */
+    val observe = ObserveUiState(persist)
 
     /** 底栏停在第几页。存枚举名，读不懂就回回合流页。 */
     var tab: NavTab by saved(UiKeys.TAB, readTab(), { it.name })
@@ -337,8 +342,6 @@ class AppUiState(
     /** 视频库状态舱（编排细节在 VideoUnderstandingState，红线三拆件）。 */
     val video = VideoUnderstandingState(watchInboxDir = watchInboxDir)
 
-    /** SO 观测桥状态舱（560 清单 361-400 域；状态机在引擎件，这里只存收场）。 */
-    val observe = ObserveUiState(persist)
 
     // ── APK 检查（560 清单 121-160 域；引擎全测，这里只存文本收场） ──
 

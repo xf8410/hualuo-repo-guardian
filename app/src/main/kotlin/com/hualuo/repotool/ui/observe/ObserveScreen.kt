@@ -92,16 +92,16 @@ fun ObserveScreen(state: AppUiState) {
             }
         }
 
-        if (o.lastHealth != null) {
+        if (o.healthBody != null) {
             HCard {
                 CardTitle("/health 原文")
-                Text(o.lastHealth!!, fontSize = 11.5.sp, lineHeight = 16.sp)
+                Text(o.healthBody!!, fontSize = 11.5.sp, lineHeight = 16.sp)
             }
         }
-        if (o.lastStatus != null) {
+        if (o.statusBody != null) {
             HCard {
                 CardTitle("/status 原文")
-                Text(o.lastStatus!!, fontSize = 11.5.sp, lineHeight = 16.sp)
+                Text(o.statusBody!!, fontSize = 11.5.sp, lineHeight = 16.sp)
             }
         }
 
