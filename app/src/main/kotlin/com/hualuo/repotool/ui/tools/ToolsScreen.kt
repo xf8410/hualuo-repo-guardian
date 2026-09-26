@@ -1,5 +1,6 @@
 package com.hualuo.repotool.ui.tools
 
+import com.hualuo.repotool.ui.viewer.ViewerCard
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -61,6 +62,10 @@ fun ToolsScreen(state: AppUiState) {
         Spacer(Modifier.height(8.dp))
 
         VideoUnderstandingCard(state)
+
+        Spacer(Modifier.height(10.dp))
+
+        ViewerCard(state)
 
         Spacer(Modifier.height(10.dp))
 

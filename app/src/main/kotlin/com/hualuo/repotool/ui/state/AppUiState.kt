@@ -96,6 +96,9 @@ class AppUiState(
      *  放在 toolRegistry 构造调用之前：构造时 observeClientProvider 闭包要捕获它。 */
     val observe = ObserveUiState(persist)
 
+    /** 查看器状态舱（全语言/进制/全格式上传；流式分块，红线三拆件）。 */
+    val viewer = ViewerUiState(persist)
+
     /** 底栏停在第几页。存枚举名，读不懂就回回合流页。 */
     var tab: NavTab by saved(UiKeys.TAB, readTab(), { it.name })
 

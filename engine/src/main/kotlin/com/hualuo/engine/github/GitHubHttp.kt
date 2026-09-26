@@ -116,3 +116,64 @@ fun githubHttpPostJson(url: String, token: String?, jsonBody: String): GitHubHtt
 } catch (e: Exception) {
     GitHubHttpResult(0, e.message ?: "请求没发出去", false)
 }
+
+
+/**
+ * 流式请求体发送（大文件上传专用，查看器/上传全格式的引擎件）：
+ * [writeBody] 直接往连接输出流写——文件流边读边 base64 编码边发，
+ * 全程内存里只有几 KB 的块缓冲（红线二：不许把整个文件读进内存）。
+ * [contentLength] 必须调用方先算准（base64 长度可预知），分块传输我们不设——
+ * GitHub API 不认 chunked 的 JSON。
+ */
+fun githubHttpSendStreaming(
+    url: String,
+    token: String?,
+    method: String,
+    contentLength: Long,
+    writeBody: (java.io.OutputStream) -> Unit,
+): GitHubHttpResult = try {
+    val conn = URL(url).openConnection() as HttpURLConnection
+    conn.connectTimeout = 15_000
+    conn.readTimeout = 120_000
+    conn.requestMethod = method
+    conn.setRequestProperty("accept", "application/vnd.github+json")
+    conn.setRequestProperty("content-type", "application/json")
+    conn.setRequestProperty("user-agent", "hualuo-repo-tool")
+    if (!token.isNullOrBlank()) conn.setRequestProperty("authorization", "Bearer $token")
+    conn.doOutput = true
+    conn.setFixedLengthStreamingMode(contentLength)
+    conn.outputStream.use { writeBody(it) }
+    val status = conn.responseCode
+    val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+    val body = stream?.use { readBounded(it, GITHUB_MAX_BODY_CHARS) }
+    GitHubHttpResult(status, body?.text ?: "", body?.truncated ?: false)
+} catch (e: IOException) {
+    GitHubHttpResult(0, e.message ?: "网络不通", false)
+} catch (e: Exception) {
+    GitHubHttpResult(0, e.message ?: "请求没发出去", false)
+}
+
+
+/** PATCH JSON 实现（git ref 快进更新用）：与 POST 同规矩，方法换 PATCH。 */
+fun githubHttpPatchJson(url: String, token: String?, jsonBody: String): GitHubHttpResult = try {
+    val conn = URL(url).openConnection() as HttpURLConnection
+    conn.connectTimeout = 15_000
+    conn.readTimeout = 30_000
+    conn.requestMethod = "PATCH"
+    conn.setRequestProperty("accept", "application/vnd.github+json")
+    conn.setRequestProperty("content-type", "application/json")
+    conn.setRequestProperty("user-agent", "hualuo-repo-tool")
+    if (!token.isNullOrBlank()) conn.setRequestProperty("authorization", "Bearer $token")
+    val bytes = jsonBody.toByteArray(Charsets.UTF_8)
+    conn.doOutput = true
+    conn.setFixedLengthStreamingMode(bytes.size)
+    conn.outputStream.use { it.write(bytes) }
+    val status = conn.responseCode
+    val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+    val body = stream?.use { readBounded(it, GITHUB_MAX_BODY_CHARS) }
+    GitHubHttpResult(status, body?.text ?: "", body?.truncated ?: false)
+} catch (e: IOException) {
+    GitHubHttpResult(0, e.message ?: "网络不通", false)
+} catch (e: Exception) {
+    GitHubHttpResult(0, e.message ?: "请求没发出去", false)
+}

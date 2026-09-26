@@ -47,6 +47,10 @@ data class GitHubFileContent(
     val sha: String?,
     val tooBig: Boolean,
     val error: String?,
+    /** true = 二进制文件：内容走 [base64Content]（查看器给 hex 页，不再"不给预览"）。 */
+    val isBinary: Boolean = false,
+    /** 二进制内容的 base64（≤1MB 全文；超限时是 raw 档前段，truncated 会说）。 */
+    val base64Content: String? = null,
 )
 
 /** 一个分支：名字 + 头指针 sha（界面切换分支用）。 */
@@ -175,9 +179,6 @@ class GitHubRepoClient(
         return GitHubBrowse(sorted, bad, null)
     }
 
-    /** contents 单文件接口的原文上限：1MB，超过就只给 encoding=none（预览走 raw 档）。 */
-    private val contentsFileLimitBytes = 1_000_000L
-
     /**
      * 读一个文件：JSON 档一次拿「内容 + sha + 是否超限」。没超限把 base64 解成原文；
      * 超限退回 raw 档只给前一段预览（sha 照给，但 tooBig = true，改码闸在界面拦）。
@@ -204,14 +205,18 @@ class GitHubRepoClient(
         val size = (obj["size"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: 0L
         val encoding = (obj["encoding"] as? JsonPrimitive)?.contentOrNull
         val encodedContent = (obj["content"] as? JsonPrimitive)?.contentOrNull ?: ""
-        if (encoding == "none" || size > contentsFileLimitBytes) {
+        if (encoding == "none" || size > CONTENTS_LIMIT) {
             // 超限：raw 档只给前一段预览。sha 照带（B 段如果做整文件替换也认账），改码闸在界面拦
             val raw = fetch(url, token, GITHUB_ACCEPT_RAW, GITHUB_MAX_BODY_CHARS)
             if (raw.status != 200) {
                 return GitHubFileContent(cleanPath, null, 0, false, sha, true, httpIssue(raw))
             }
             if (raw.body.contains('\u0000')) {
-                return GitHubFileContent(cleanPath, null, 0, raw.truncated, sha, true, "这是二进制文件：App 里不给内容预览")
+                return GitHubFileContent(
+                    cleanPath, null, 0, raw.truncated, sha, true, null,
+                    isBinary = true,
+                    base64Content = java.util.Base64.getEncoder().encodeToString(raw.body.toByteArray(Charsets.ISO_8859_1)),
+                )
             }
             return GitHubFileContent(cleanPath, raw.body, raw.body.length, raw.truncated, sha, true, null)
         }
@@ -224,7 +229,12 @@ class GitHubRepoClient(
             return GitHubFileContent(cleanPath, null, 0, false, sha, false, "文件内容解不出来（base64 账对不上）：${it.message ?: "出错"}")
         }
         if (decoded.contains('\u0000')) {
-            return GitHubFileContent(cleanPath, null, 0, false, sha, false, "这是二进制文件：App 里不给内容预览（改码也不收二进制）")
+            // 二进制：base64 原样透传（GitHub 给什么给什么），查看器开 hex 页——不省略任何格式
+            return GitHubFileContent(
+                cleanPath, null, 0, false, sha, false, null,
+                isBinary = true,
+                base64Content = encodedContent.replace("\n", "").replace("\r", ""),
+            )
         }
         return GitHubFileContent(cleanPath, decoded, decoded.length, result.truncated, sha, false, null)
     }
@@ -395,6 +405,387 @@ class GitHubRepoClient(
         return GitHubCommitWritten(commitSha, contentSha, null)
     }
 
+    /**
+     * 上传一个文件（查看器「传上去」按钮的引擎件，**全格式、无大小上限、不闪退**）。
+     *
+     * 内存纪律（红线二）：全程流式——文件边读边 base64 边发，内存里只有 64KB 块缓冲，
+     * 2GB 的文件也一样稳。GitHub 单请求 100MB 的硬限用**分卷**绕开：
+     *  - ≤90MB：整文件一次通路（≤900KB 走 contents，其余走 git blobs 流式）；
+     *  - >90MB：切成 90MB 的卷，落 `原路径.parts/`，每卷独立 blob 到 tree 到 commit 到 ref。
+     *    字节只发一次（blob 步）；每卷独立提交，中断了已传的卷都在，
+     *    重传先查已有卷、尺寸对得上就跳过——**断点续传**；
+     *  - 全部卷收尾传 manifest.json（原名/大小/卷清单/流式 sha256），可验可还原。
+     *
+     * [onProgress] 进度回调（已发送字节/总字节/一句人话），引擎侧节流约 0.5s 一次，
+     * app 层拿去画进度条——不让人干等。
+     */
+    fun uploadFile(
+        repo: String,
+        path: String,
+        branch: String?,
+        message: String,
+        source: UploadSource,
+        token: String?,
+        onProgress: ProgressSink = ProgressSink { _, _, _ -> },
+    ): GitHubCommitWritten {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubCommitWritten(null, null, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        val cleanPath = path.trim().trim('/')
+        if (cleanPath.isEmpty()) return GitHubCommitWritten(null, null, "上传路径是空的")
+        if (message.isBlank()) return GitHubCommitWritten(null, null, "commit message 不能空：写一句这次传的是什么")
+        if (source.sizeBytes <= 0L) return GitHubCommitWritten(null, null, "文件是空的（0 字节）：空文件不值得传")
+        val total = source.sizeBytes
+        return if (total <= CHUNK_BYTES) {
+            uploadSingle(full, cleanPath, branch, message, source, total, token, onProgress)
+        } else {
+            uploadChunked(full, cleanPath, branch, message, source, total, token, onProgress)
+        }
+    }
+
+    /** 上传来源：名字 + 大小 + 可重开的流（SAF 的 openInputStream 天然满足）。 */
+    class UploadSource(val name: String, val sizeBytes: Long, val open: () -> java.io.InputStream)
+
+    /** 进度回调口子：done/total 字节 + 一句人话。 */
+    fun interface ProgressSink {
+        fun onProgress(doneBytes: Long, totalBytes: Long, note: String)
+    }
+
+    /** 节流包装：至少隔 [intervalMs] 才真回调（收尾 force 必到）。 */
+    private class ThrottledSink(
+        private val sink: ProgressSink,
+        private val total: Long,
+        private val intervalMs: Long = 500L,
+    ) {
+        private var last = 0L
+        fun emit(done: Long, note: String, force: Boolean = false) {
+            val now = System.currentTimeMillis()
+            if (!force && now - last < intervalMs && done < total) return
+            last = now
+            sink.onProgress(done, total, note)
+        }
+    }
+
+    /** 单文件通路：≤900KB contents PUT；其余 blobs 流式一次提交。 */
+    private fun uploadSingle(
+        full: String,
+        cleanPath: String,
+        branch: String?,
+        message: String,
+        source: UploadSource,
+        total: Long,
+        token: String?,
+        onProgress: ProgressSink,
+    ): GitHubCommitWritten {
+        val tick = ThrottledSink(onProgress, total)
+        tick.emit(0, "开始上传 ${com.hualuo.engine.language.HexDump.humanBytes(total)}")
+        if (total <= CONTENTS_LIMIT) {
+            val bytes = runCatching {
+                source.open().use { it.readBytes() }
+            }.getOrElse { return GitHubCommitWritten(null, null, "读文件失败：${it.message ?: "打不开"}") }
+            tick.emit(total, "内容已读齐，正在提交", force = true)
+            val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
+            val existing = readFile(full, cleanPath, branch, token)
+            return putContentsBase64(full, cleanPath, branch, message, b64, existing.sha, token)
+        }
+        val existing = readFile(full, cleanPath, branch, token)
+        val res = uploadSingleBlobCommit(
+            full, cleanPath, branch, message, source, total, token,
+            tick, 0L, total, 1, 1,
+        )
+        return res
+    }
+
+    /** 分卷通路：切 90MB 卷、断点续传、收尾 manifest。 */
+    private fun uploadChunked(
+        full: String,
+        cleanPath: String,
+        branch: String?,
+        message: String,
+        source: UploadSource,
+        total: Long,
+        token: String?,
+        onProgress: ProgressSink,
+    ): GitHubCommitWritten {
+        val tick = ThrottledSink(onProgress, total)
+        val nameOnly = cleanPath.substringAfterLast('/')
+        val dirPart = cleanPath.substringBeforeLast('/', "")
+        val partsDir = (if (dirPart.isEmpty()) "" else "$dirPart/") + "$nameOnly.parts"
+        val partCount = com.hualuo.engine.language.HexDump.chunkCount(total, CHUNK_BYTES)
+        tick.emit(0, "大文件分卷：共 $partCount 卷（每卷 ${com.hualuo.engine.language.HexDump.humanBytes(CHUNK_BYTES)}），断点续传", force = true)
+        // 断点续传：parts 目录里已有哪些尺寸对得上的卷
+        val uploadedSizes = HashMap<Int, Long>()
+        val existingDir = browse(full, "$partsDir/", branch, token)
+        if (existingDir.error == null) {
+            for (e in existingDir.entries) {
+                val m = Regex("part(\\d{5})$").find(e.name)
+                if (m != null && e.sizeBytes > 0) uploadedSizes[m.groupValues[1].toInt()] = e.sizeBytes
+            }
+        }
+        var done = 0L
+        for (idx in 1..partCount) {
+            val partSize = if (idx == partCount) total - done else CHUNK_BYTES
+            val already = uploadedSizes[idx]
+            if (already != null && already == partSize) {
+                done += partSize
+                tick.emit(done, "跳过已传的卷 $idx/$partCount（断点续传）")
+                continue
+            }
+            val partName = String.format("%s.part%05d", nameOnly, idx)
+            val partPath = "$partsDir/$partName"
+            val partMessage = "$message（卷 $idx/$partCount）"
+            val partSource = UploadSource(partName, partSize) { source.open().skipFully(done) }
+            val res = uploadSingleBlobCommit(
+                full, partPath, branch, partMessage, partSource, partSize, token,
+                tick, done, total, idx, partCount,
+            )
+            if (res.error != null) return res
+            done += partSize
+        }
+        // 收尾 manifest
+        tick.emit(done, "卷全部到位，写 manifest.json（含 sha256 校验账）", force = true)
+        val manifest = buildManifest(full, partsDir, nameOnly, source, total, partCount, branch, token)
+            ?: return GitHubCommitWritten(null, null, "manifest 生成失败：卷账读不回来（网络抖动），重传一次即可（卷会跳过）")
+        val manifestRes = uploadSingleBlobCommit(
+            full, "$partsDir/manifest.json", branch,
+            "$message（manifest：$nameOnly 共 $partCount 卷）", manifest, manifest.sizeBytes,
+            token, tick, done, total, partCount + 1, partCount + 1,
+        )
+        if (manifestRes.error != null) return manifestRes
+        return GitHubCommitWritten(manifestRes.commitSha, null, null)
+    }
+
+    /** 一卷/清单的完整落盘：blob（流式）到 tree 到 commit 到 ref。 */
+    private fun uploadSingleBlobCommit(
+        full: String,
+        cleanPath: String,
+        branch: String?,
+        message: String,
+        source: UploadSource,
+        sizeBytes: Long,
+        token: String?,
+        tick: ThrottledSink,
+        doneBefore: Long,
+        total: Long,
+        idx: Int,
+        idxTotal: Int,
+    ): GitHubCommitWritten {
+        val br = branch?.takeIf { it.isNotBlank() } ?: "main"
+        val refResult = fetch("$GITHUB_API_ROOT/repos/$full/git/ref/heads/${encodeSegment(br)}", token, null, GITHUB_MAX_BODY_CHARS)
+        if (refResult.status != 200) return GitHubCommitWritten(null, null, "分支「$br」对不上账（${refResult.status}）：核对分支名")
+        val refObj = runCatching { json.parseToJsonElement(refResult.body) }.getOrNull() as? JsonObject
+        val baseCommit = (((refObj?.get("object") as? JsonObject)?.get("sha")) as? JsonPrimitive)?.contentOrNull
+        if (baseCommit.isNullOrBlank()) return GitHubCommitWritten(null, null, "分支「$br」的头指针读不出来：稍后重试")
+        val commitObj = runCatching {
+            json.parseToJsonElement(fetch("$GITHUB_API_ROOT/repos/$full/git/commits/$baseCommit", token, null, GITHUB_MAX_BODY_CHARS).body)
+        }.getOrNull() as? JsonObject
+        val baseTree = (commitObj?.get("tree") as? JsonObject)?.let { t -> (t["sha"] as? JsonPrimitive)?.contentOrNull }
+
+        val counting = countingSource(source, sizeBytes, tick, doneBefore, total, idx, idxTotal)
+        val blobSha = putBlobForSha(full, counting, sizeBytes, token)
+            ?: return GitHubCommitWritten(null, null, "blob 上传失败（网络中断或对端拒收）：直接重传，已传的卷会自动跳过")
+
+        val treeBody = buildString {
+            append("{\"tree\":[{\"path\":\"").append(jsonStr(cleanPath))
+            append("\",\"mode\":\"100644\",\"type\":\"blob\",\"sha\":\"").append(blobSha).append("\"}]")
+            if (!baseTree.isNullOrBlank()) append(",\"base_tree\":\"").append(baseTree).append('"')
+            append('}')
+        }
+        val treeResult = githubHttpPostJson("$GITHUB_API_ROOT/repos/$full/git/trees", token, treeBody)
+        if (treeResult.status !in 200..299) return GitHubCommitWritten(null, null, "tree 步失败（${treeResult.status}）：${httpIssue(treeResult)}")
+        val treeSha = ((runCatching { json.parseToJsonElement(treeResult.body) }.getOrNull() as? JsonObject)
+            ?.get("sha") as? JsonPrimitive)?.contentOrNull ?: return GitHubCommitWritten(null, null, "tree 账里没有 sha：稍后重试")
+
+        val commitBody = "{\"message\":${jsonStr(message)},\"tree\":\"$treeSha\",\"parents\":[\"$baseCommit\"]}"
+        val commitResult = githubHttpPostJson("$GITHUB_API_ROOT/repos/$full/git/commits", token, commitBody)
+        if (commitResult.status !in 200..299) return GitHubCommitWritten(null, null, "commit 步失败（${commitResult.status}）：${httpIssue(commitResult)}")
+        val newCommit = ((runCatching { json.parseToJsonElement(commitResult.body) }.getOrNull() as? JsonObject)
+            ?.get("sha") as? JsonPrimitive)?.contentOrNull ?: return GitHubCommitWritten(null, null, "commit 账里没有 sha：稍后重试")
+
+        val refBody = "{\"sha\":\"$newCommit\",\"force\":false}"
+        val push = githubHttpPostJson("$GITHUB_API_ROOT/repos/$full/git/refs/heads/${encodeSegment(br)}", token, refBody)
+            .takeIf { it.status in 200..299 }
+            ?: githubHttpPatchJson("$GITHUB_API_ROOT/repos/$full/git/refs/heads/${encodeSegment(br)}", token, refBody)
+        if (push.status !in 200..299) {
+            return GitHubCommitWritten(
+                null, null,
+                if (push.status == 422 || push.status == 409) "分支被别人先推了一步（${push.status}）：直接重传，进度会接着走"
+                else "ref 步失败（${push.status}）：${httpIssue(push)}",
+            )
+        }
+        tick.emit(doneBefore + sizeBytes, "第 $idx/$idxTotal 件已落库", force = true)
+        return GitHubCommitWritten(newCommit, treeSha, null)
+    }
+
+    /** 流式发送一个 blob，返回 sha。发一半断掉会失败报账（不装成功）。 */
+    private fun putBlobForSha(full: String, source: UploadSource, sizeBytes: Long, token: String?): String? {
+        val head = "{\"content\":\""
+        val tail = "\",\"encoding\":\"base64\"}"
+        val b64Len = (sizeBytes + 2) / 3 * 4
+        val result = githubHttpSendStreaming(
+            "$GITHUB_API_ROOT/repos/$full/git/blobs", token, "POST",
+            head.length.toLong() + b64Len + tail.length.toLong(),
+        ) { out ->
+            out.write(head.toByteArray(Charsets.UTF_8))
+            val enc = java.util.Base64.getEncoder().wrap(out)
+            source.open().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    if (n > 0) enc.write(buf, 0, n)
+                }
+                enc.close()
+            }
+            out.write(tail.toByteArray(Charsets.UTF_8))
+        }
+        if (result.status !in 200..299) return null
+        return ((runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject)
+            ?.get("sha") as? JsonPrimitive)?.contentOrNull
+    }
+
+    /** InputStream 扩展：跳过 [n] 字节（skip 不保证跳满的老账在这里兜：循环读丢弃）。internal 供测试。 */
+    internal fun java.io.InputStream.skipFully(n: Long): java.io.InputStream {
+        var left = n
+        val buf = ByteArray(64 * 1024)
+        while (left > 0) {
+            val got = read(buf, 0, minOf(left, buf.size.toLong()).toInt())
+            if (got < 0) break
+            left -= got
+        }
+        return this
+    }
+
+    /** 计数源：open() 时包一层计数流，把「发送中已写出字节」实时报进度（blob 流式即进度）。 */
+    private fun countingSource(
+        src: UploadSource,
+        sizeBytes: Long,
+        tick: ThrottledSink,
+        doneBefore: Long,
+        total: Long,
+        idx: Int,
+        idxTotal: Int,
+    ): UploadSource = UploadSource(src.name, sizeBytes) {
+        val raw = src.open()
+        object : java.io.InputStream() {
+            var sent = 0L
+            override fun read(): Int {
+                val v = raw.read()
+                if (v >= 0) markSent(1)
+                return v
+            }
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                val n = raw.read(b, off, len)
+                if (n > 0) markSent(n.toLong())
+                return n
+            }
+            private fun markSent(n: Long) {
+                sent += n
+                tick.emit(doneBefore + sent, "第 $idx/$idxTotal 件：已发 ${com.hualuo.engine.language.HexDump.humanBytes(sent)}")
+            }
+            override fun close() { raw.close() }
+        }
+    }
+
+    /** manifest 生成：卷清单 + 流式 sha256（文件再流一遍算哈希，内存不涨）。 */
+    private fun buildManifest(
+        full: String,
+        partsDir: String,
+        nameOnly: String,
+        source: UploadSource,
+        total: Long,
+        partCount: Int,
+        branch: String?,
+        token: String?,
+    ): UploadSource? {
+        val dir = browse(full, "$partsDir/", branch, token)
+        if (dir.error != null) return null
+        val parts = dir.entries
+            .filter { Regex("part\\d{5}$").containsMatchIn(it.name) }
+            .sortedBy { it.name }
+        if (parts.isEmpty()) return null
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        runCatching {
+            source.open().use { input ->
+                val buf = ByteArray(128 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    if (n > 0) digest.update(buf, 0, n)
+                }
+            }
+        }
+        val sha256 = digest.digest().joinToString("") { String.format("%02x", it) }
+        val json = buildString {
+            append("{\"originalName\":\"").append(jsonStr(nameOnly))
+            append("\",\"sizeBytes\":").append(total)
+            append(",\"chunkBytes\":").append(CHUNK_BYTES)
+            append(",\"parts\":").append(partCount)
+            append(",\"sha256\":\"").append(sha256).append('"')
+            append(",\"files\":[")
+            parts.forEachIndexed { i, p ->
+                if (i > 0) append(',')
+                append("{\"name\":\"").append(jsonStr(p.name)).append("\",\"sizeBytes\":").append(p.sizeBytes).append('}')
+            }
+            append("]}")
+        }
+        val bytes = json.toByteArray(Charsets.UTF_8)
+        return UploadSource("manifest.json", bytes.size.toLong()) { java.io.ByteArrayInputStream(bytes) }
+    }
+
+    /** contents 通路：base64 已在手，PUT 一次（sha 有=更新，无=新建）。 */
+    private fun putContentsBase64(
+        full: String,
+        cleanPath: String,
+        branch: String?,
+        message: String,
+        b64: String,
+        sha: String?,
+        token: String?,
+    ): GitHubCommitWritten {
+        val encoded = encodeContentsPath(cleanPath)
+        val url = "$GITHUB_API_ROOT/repos/$full/contents/$encoded"
+        val body = buildString {
+            append("{\"message\":").append(jsonStr(message))
+            append(",\"content\":\"").append(b64).append('"')
+            if (!sha.isNullOrBlank()) append(",\"sha\":\"").append(sha).append('"')
+            if (!branch.isNullOrBlank()) append(",\"branch\":\"").append(encodeSegment(branch)).append('"')
+            append('}')
+        }
+        val result = githubHttpPutJson(url, token, body)
+        return commitFromResult(result)
+    }
+
+    /** GitHubCommitWritten 兼容：上传成功后的回执拼装。 */
+    /** GitHubCommitWritten 兼容：上传成功后的回执拼装。 */
+    private fun commitFromResult(result: GitHubHttpResult): GitHubCommitWritten {
+        if (result.status == 422 || result.status == 409) {
+            return GitHubCommitWritten(null, null, "文件在我读到之后被别人改过（GitHub 报 ${result.status}）：重新上传一次再试，别硬盖别人的账")
+        }
+        if (result.status == 404) return GitHubCommitWritten(null, null, "GitHub 说没这个文件或分支（404）：路径或分支不对")
+        if (result.status !in 200..299) return GitHubCommitWritten(null, null, httpIssue(result))
+        val obj = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonObject
+            ?: return GitHubCommitWritten(null, null, "GitHub 回的内容读不懂（200 但不是提交回执）")
+        val commitSha = ((obj["commit"] as? JsonObject)?.get("sha") as? JsonPrimitive)?.contentOrNull
+        val contentSha = ((obj["content"] as? JsonObject)?.get("sha") as? JsonPrimitive)?.contentOrNull
+        return GitHubCommitWritten(commitSha, contentSha, null)
+    }
+
+    /** JSON 字符串值转义（上传路径与 commit message 都要过这）。 */
+    private fun jsonStr(s: String): String {
+        val sb = StringBuilder("\"")
+        for (ch in s) {
+            when (ch) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> if (ch < ' ') sb.append(String.format("\\u%04x", ch.code)) else sb.append(ch)
+            }
+        }
+        return sb.append('"').toString()
+    }
+
     private fun parseRepoList(result: GitHubHttpResult): GitHubRepoList {
         val array = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonArray
             ?: return GitHubRepoList(emptyList(), 0, "GitHub 回的内容读不懂（200 但不是仓库清单）")
@@ -438,6 +829,11 @@ class GitHubRepoClient(
         URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
 
     private companion object {
+        /** 分卷阈值：GitHub 单请求 100MB 硬限之下留裕量（绕限靠切卷，不靠拒绝大文件）。 */
+        const val CHUNK_BYTES = 90L * 1024 * 1024
+
+        /** contents 单请求上限（GitHub 硬限 1MB，留一点余量）。 */
+        const val CONTENTS_LIMIT = 900L * 1024
         val json = Json { ignoreUnknownKeys = true }
     }
 }
