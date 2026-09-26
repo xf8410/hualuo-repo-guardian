@@ -178,7 +178,7 @@ class ViewerUiState(private val persist: UiPersistence) {
         Thread {
             try {
                 val open = reopen ?: return@Thread
-                val page = open().skipFully(offset).use { input ->
+                val page = open().skipLong(offset).use { input ->
                     val buf = ByteArray(HEX_PAGE_BYTES)
                     var filled = 0
                     while (filled < HEX_PAGE_BYTES) {
@@ -248,6 +248,18 @@ class ViewerUiState(private val persist: UiPersistence) {
                 uploading = false
             }
         }.start()
+    }
+
+    /** InputStream 跳过 [n] 字节：skip() 不保证跳满的老账在这里兜（循环读丢弃）。 */
+    private fun java.io.InputStream.skipLong(n: Long): java.io.InputStream {
+        var left = n
+        val buf = ByteArray(64 * 1024)
+        while (left > 0) {
+            val got = read(buf, 0, minOf(left, buf.size.toLong()).toInt())
+            if (got < 0) break
+            left -= got
+        }
+        return this
     }
 
     companion object {
