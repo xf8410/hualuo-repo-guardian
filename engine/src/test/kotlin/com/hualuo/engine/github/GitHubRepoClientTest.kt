@@ -448,8 +448,6 @@ class GitHubRepoClientTest {
         assertNotNull(log.error)
         assertTrue(log.error!!.contains("空"))
     }
-}
-
 /** ── 404 自愈（旧 Agora 的病：模型爱传 ref=main，撞上 master 仓就 404 来回试错）── */
 
 private class RoutingFetch : (String, String?, String?, Int) -> GitHubHttpResult {
@@ -463,6 +461,8 @@ private class RoutingFetch : (String, String?, String?, Int) -> GitHubHttpResult
                 GitHubHttpResult(404, """{"message":"No commit found for the ref main"}""")
             url.contains("/contents/scripts/_check_color.py") && url.contains("ref=master") ->
                 GitHubHttpResult(200, """{"name":"_check_color.py","path":"scripts/_check_color.py","sha":"abc123","size":50,"encoding":"base64","content":"cHJpbnQoImhlbGxvIikK"}""")
+            url.contains("/contents/scripts") && url.contains("ref=master") ->
+                GitHubHttpResult(200, """[{"name":"_check_color.py","path":"scripts/_check_color.py","type":"file","size":50}]""")
             url.contains("/contents/scripts/_check_color.py") ->
                 GitHubHttpResult(404, """{"message":"Not Found"}""")
             url.contains("/commits") && url.contains("sha=main") ->
@@ -480,7 +480,7 @@ fun `readFile 404 自愈：main 不存在探默认分支 master 重试成功`() 
     val c = GitHubRepoClient(fetch)
     val out = c.readFile("xulai1001/umaai-rs", "scripts/_check_color.py", "main", "t")
     assertNull(out.error)
-    assertEquals("hello", out.text?.trim())
+    assertEquals("""print("hello")""", out.text?.trim())
     // 序列钉住：先按 main 打 404，再探默认分支，再用 master 重试——不多打
     assertTrue(fetch.calls.any { it.contains("ref=main") })
     assertTrue(fetch.calls.any { it.endsWith("/repos/xulai1001/umaai-rs") })
@@ -511,4 +511,6 @@ fun `listCommits 404 自愈：切默认分支重取`() {
     val out = c.listCommits("xulai1001/umaai-rs", "main", null, "t", 10)
     assertNull(out.error)
     assertEquals(1, out.commits.size)
+}
+
 }
