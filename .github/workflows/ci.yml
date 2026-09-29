@@ -254,31 +254,8 @@ jobs:
             fi
           } | tee "$GITHUB_STEP_SUMMARY"
 
-      - name: 收日志预检（配额不足=明确跳过+写明原因，不放注定红的步）
+      - name: 收日志（无条件上传；红了就修根因——腾配额，不跳过不逃避）
         if: always()
-        id: logpre
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          USED=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --paginate --jq '[.artifacts[].size_in_bytes] | add // 0')
-          EST=$(du -sb 日志 2>/dev/null | cut -f1 || echo 0)
-          LIMIT=$((500*1024*1024))
-          if [ "$((USED + EST))" -gt "$LIMIT" ]; then
-            echo "skip=quota" >> "$GITHUB_OUTPUT"
-            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ⏭️ 日志未上传（明确跳过，非失败）
-          Artifact 配额不足：已用 ${USED} 字节 + 本次需 ${EST} 字节 > 上限 ${LIMIT}。
-          代码编译/测试/红线/打包状态见上方各步——与此跳过无关。
-          处置：删旧产物或等配额重算（6-12h）后 re-run。
-          EOF
-          else
-            echo "skip=ok" >> "$GITHUB_OUTPUT"
-            echo "配额足够（已用 ${USED} + 本次 ${EST} / 上限 ${LIMIT}），继续上传"
-          fi
-
-      - name: 收日志（成功也留，方便回看这次到底改了什么；安装包在里面）
-        if: always() && steps.logpre.outputs.skip != 'quota'
         uses: actions/upload-artifact@v4
         with:
           name: 自检日志-${{ github.run_id }}-${{ github.sha }}
