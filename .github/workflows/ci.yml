@@ -189,11 +189,12 @@ jobs:
           fi
           echo "一致：全项目只有 version.properties 一处。"
 
-      - name: 跑引擎测试（纯逻辑，不用手机）
+      - name: 跑引擎测试（纯逻辑，不用手机；--rerun-tasks 禁缓存保真实+逐测试XML入档）
         run: |
           set -o pipefail
-          mkdir -p 日志
-          gradle --no-daemon --stacktrace :engine:test 2>&1 | tee 日志/引擎测试.log
+          mkdir -p 日志/测试结果
+          gradle --no-daemon --stacktrace :engine:test --rerun-tasks 2>&1 | tee 日志/引擎测试.log
+          cp engine/build/test-results/test/*.xml 日志/测试结果/ 2>/dev/null || echo "（无XML=无测试，红）"
 
       - name: 跑界面状态测试（纯 JVM：子页栈/多选删/附件账这些逻辑必须有人盯）
         run: |
