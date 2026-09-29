@@ -122,8 +122,8 @@ class ObserveUiState(
                 val rows = ArrayList<String>()
                 // 轻抽：正则抓每条事件的 id/type（避免 app 模块引 JSON 依赖）；
                 // 抓不到就整段原文照显——形状不合已知事件数组时不猜
-                val idRegex = Regex("\"id\"\s*:\s*(\d+)")
-                val typeRegex = Regex("\"type\"\s*:\s*\"([^\"]*)\"")
+                val idRegex = Regex("\"id\"\\s*:\\s*(\\d+)")
+                val typeRegex = Regex("\"type\"\\s*:\\s*\\\"([^\\\"]*)\\\"")
                 val objects = body.split("},")
                 for (obj in objects) {
                     val id = idRegex.find(obj)?.groupValues?.get(1)?.toLongOrNull() ?: continue
