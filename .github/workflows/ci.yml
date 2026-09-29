@@ -256,11 +256,22 @@ jobs:
 
       - name: 收日志（成功也留，方便回看这次到底改了什么；安装包在里面）
         if: always()
-        # 收日志不是红线：配额满（500MB，重算 6-12h）不该把全绿的 run 染红（#302/#303 两次误伤）
-        continue-on-error: true
+        # 收日志失败必须显红（用户纪律：不许外绿内红假绿）。配额满时红=诚实，
+        # run 页 summary 会写明"代码全绿、仅日志上传失败"供判读。
         uses: actions/upload-artifact@v4
         with:
           name: 自检日志-${{ github.run_id }}-${{ github.sha }}
           path: 日志/
           # 500MB 免费配额教训（#301 配额满挂收日志步）：日志留 3 天足够回看
           retention-days: 3
+
+      - name: 判读说明（日志上传失败时写明根因，代码本身是否全绿）
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## 🔴 本 run 红的判读
+          **代码编译、全部测试、四条红线、打包签名均已通过**——红仅因「收日志」步上传 artifact 失败。
+          最常见根因：GitHub Artifact 存储配额（500MB）满，重算窗口 6-12 小时。
+          处置：等配额重算后 re-run，或删旧 Release 资产腾位。代码本身无需改动。
+          EOF
+
