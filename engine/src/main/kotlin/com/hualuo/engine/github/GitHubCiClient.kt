@@ -39,6 +39,12 @@ data class GitHubRelease(val tag: String, val name: String?, val publishedAt: St
 /** 最新发布版查询回执：404 单独说（还没发布过 ≠ 网络坏）。 */
 data class GitHubReleaseResult(val release: GitHubRelease?, val notFound: Boolean, val error: String?)
 
+/** 发布列表回执（448 续刀）：读不动的条目单独计数，错误带人话。 */
+data class GitHubReleaseList(val releases: List<GitHubRelease>, val badEntries: Int, val error: String?)
+
+/** 手动触发 workflow（449）回执：204=触发成功，其他状态码带人话。 */
+data class GitHubDispatchResult(val dispatched: Boolean, val httpStatus: Int?, val error: String?)
+
 /**
  * workflow_runs 清单的**共用解析**（CI 客户端与仓库工作台客户端双端共一份，防双源坑）：
  * 只取界面字段（id/name/head_sha/status/conclusion/created_at），读不动的条目计数不静默。
@@ -94,7 +100,12 @@ fun normalizeGitHubRepo(raw: String): String? {
  * 安全规矩：令牌只进请求头，绝不进任何报错、日志与界面文本——错误里只带状态码；
  * 响应有界读（512KB 封顶），GitHub 错误页再大也只取前一段。
  */
-class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = ::defaultCiFetch) {
+class GitHubCiClient(
+    private val fetch: (String, String?) -> GitHubHttpResult = ::defaultCiFetch,
+    private val fetchPost: (String, String?, String) -> GitHubHttpResult = { url, token, body ->
+        githubHttpPostJson(url, token, body)
+    },
+) {
 
     /**
      * 默认分支的最近几条 workflow run（新在前是 GitHub 的顺序，这里不再重排）。
@@ -131,6 +142,72 @@ class GitHubCiClient(private val fetch: (String, String?) -> GitHubHttpResult = 
                     null,
                 )
             }
+        }
+    }
+
+    /**
+     * 发布版本列表（560 清单 448 续刀）：最新一条在前是 GitHub 的顺序，这里不再重排。
+     * 只取界面字段（tag/name/published_at），读不动的条目计数不静默。
+     */
+    fun releases(repo: String, token: String?, limit: Int = 10): GitHubReleaseList {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubReleaseList(emptyList(), 0, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        val result = fetch("$GITHUB_API_ROOT/repos/$full/releases?per_page=${limit.coerceIn(1, 30)}", token)
+        if (result.status != 200) return GitHubReleaseList(emptyList(), 0, httpIssue(result))
+        val root = runCatching { json.parseToJsonElement(result.body) }.getOrNull() as? JsonArray
+            ?: return GitHubReleaseList(emptyList(), 0, "发布列表读不懂（200 但不是 JSON 数组）")
+        val out = ArrayList<GitHubRelease>()
+        var bad = 0
+        for (element in root) {
+            if (out.size >= limit.coerceIn(1, 30)) break
+            if (element !is JsonObject) { bad += 1; continue }
+            val tag = (element["tag_name"] as? JsonPrimitive)?.contentOrNull
+            if (tag.isNullOrEmpty()) { bad += 1; continue }
+            out += GitHubRelease(
+                tag = tag,
+                name = (element["name"] as? JsonPrimitive)?.contentOrNull,
+                publishedAt = (element["published_at"] as? JsonPrimitive)?.contentOrNull,
+            )
+        }
+        return GitHubReleaseList(out, bad, null)
+    }
+
+    /**
+     * 手动触发一次 workflow run（560 清单 449）：204=触发成功。
+     * workflowFile 是 .github/workflows/ 下的文件名（如 ci.yml）——workflow id 或文件名 GitHub 都收，
+     * 这里用文件名（界面里可见、可复制）。
+     */
+    fun dispatch(
+        repo: String,
+        workflowFile: String,
+        ref: String,
+        token: String?,
+        inputs: Map<String, String> = emptyMap(),
+    ): GitHubDispatchResult {
+        val full = normalizeGitHubRepo(repo)
+            ?: return GitHubDispatchResult(false, null, "仓库写法不对：要 owner/name（现在是「$repo」）")
+        if (workflowFile.isBlank()) return GitHubDispatchResult(false, null, "workflow 文件名不能为空（.github/workflows/ 下的文件名，如 ci.yml）")
+        if (ref.isBlank()) return GitHubDispatchResult(false, null, "目标分支（ref）不能为空")
+        val payload = buildString {
+            append("{\"ref\":\""); append(ref.replace("\"", ""))
+            append("\",\"inputs\":{")
+            append(inputs.entries.joinToString(",") { (k, v) ->
+                "\"" + k.replace("\"", "") + "\":\"" + v.replace("\"", "") + "\""
+            })
+            append("}}")
+        }
+        val result = fetchPost(
+            "$GITHUB_API_ROOT/repos/$full/actions/workflows/${workflowFile.trim().replace("/", "")}/dispatches",
+            token,
+            payload,
+        )
+        return when {
+            result.status == 204 -> GitHubDispatchResult(true, 204, null)
+            result.status == 404 -> GitHubDispatchResult(false, 404, "GitHub 说 404：workflow 文件名不对，或这个 workflow 没有 workflow_dispatch 触发器")
+            result.status == 403 -> GitHubDispatchResult(false, 403, "GitHub 不给触发（403）：令牌要有 actions:write 权限")
+            result.status == 422 -> GitHubDispatchResult(false, 422, "GitHub 拒了参数（422）：核对 ref 分支名与 inputs 字段名")
+            result.status == 0 -> GitHubDispatchResult(false, 0, "连不上 GitHub：${brief(result.body)}")
+            else -> GitHubDispatchResult(false, result.status, "GitHub 回了 ${result.status}，稍后再试")
         }
     }
 
