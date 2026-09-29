@@ -256,6 +256,8 @@ jobs:
 
       - name: 收日志（成功也留，方便回看这次到底改了什么；安装包在里面）
         if: always()
+        # 收日志不是红线：配额满（500MB，重算 6-12h）不该把全绿的 run 染红（#302/#303 两次误伤）
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: 自检日志-${{ github.run_id }}-${{ github.sha }}
