@@ -120,17 +120,16 @@ class ObserveUiState(
                 val body = out.body ?: ""
                 var maxId = eventCursor
                 val rows = ArrayList<String>()
-                runCatching {
-                    val el = kotlinx.serialization.json.Json.parseToJsonElement(body)
-                    val arr = el as? kotlinx.serialization.json.JsonArray
-                        ?: (el as? kotlinx.serialization.json.JsonObject)?.get("events") as? kotlinx.serialization.json.JsonArray
-                    arr?.forEach { e ->
-                        val o = e as? kotlinx.serialization.json.JsonObject ?: return@forEach
-                        val id = (o["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-                        if (id > maxId) maxId = id
-                        val type = (o["type"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
-                        rows += (if (id > 0) "#$id " else "") + (if (type.isNotBlank()) "[$type] " else "") + e.toString().take(600)
-                    }
+                // 轻抽：正则抓每条事件的 id/type（避免 app 模块引 JSON 依赖）；
+                // 抓不到就整段原文照显——形状不合已知事件数组时不猜
+                val idRegex = Regex("\"id\"\s*:\s*(\d+)")
+                val typeRegex = Regex("\"type\"\s*:\s*\"([^\"]*)\"")
+                val objects = body.split("},")
+                for (obj in objects) {
+                    val id = idRegex.find(obj)?.groupValues?.get(1)?.toLongOrNull() ?: continue
+                    if (id > maxId) maxId = id
+                    val type = typeRegex.find(obj)?.groupValues?.get(1) ?: ""
+                    rows += (if (id > 0) "#$id " else "") + (if (type.isNotBlank()) "[$type] " else "") + obj.trim().take(600)
                 }
                 if (rows.isEmpty()) {
                     eventRows = listOf(body.take(2000))

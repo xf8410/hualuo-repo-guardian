@@ -117,7 +117,7 @@ fun ObserveScreen(state: AppUiState) {
                 }
                 if (o.eventCursor > 0) BadgeChip("游标 #${o.eventCursor}", tone = Tone.Ok)
             }
-            if (o.eventNote != null) Text(o.eventNote!!, fontSize = 11.5.sp, color = SubInk)
+            if (o.eventNote != null) Text(o.eventNote!!, fontSize = 11.5.sp, color = com.hualuo.repotool.ui.theme.SubInk)
             if (o.eventRows.isNotEmpty()) {
                 LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp)) {
                     items(o.eventRows.size) { i ->
