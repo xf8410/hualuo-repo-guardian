@@ -10,8 +10,8 @@ import java.security.cert.X509Certificate
  * APK 签名证书摘要（560 清单 128）：定位 APK Signing Block，抽 v2/v3 签名方案里的
  * 证书链，给 subject + SHA-256 指纹——覆盖安装核对（签名不一致装不上）就靠这个账。
  *
- * 格式：EOCD 定位中央目录 → 中央目录前 16 字节 magic "APK Sig Block 42" →
- * 遍历 ID-value 对（v2=0x7109871a，v3=0xf05368c0）→ 长度前缀结构里抽证书 DER。
+ * 格式：EOCD 定位中央目录，看中央目录前 16 字节 magic "APK Sig Block 42"，再
+ * 遍历 ID-value 对（v2=0x7109871a，v3=0xf05368c0），长度前缀结构里抽证书 DER。
  * 全程 RandomAccessFile 按块读（红线二），证书链 DER 用流式 CertificateFactory 解。
  */
 object ApkSignature {
@@ -50,12 +50,14 @@ object ApkSignature {
                 if (!magic.contentEquals(APK_SIG_BLOCK_MAGIC)) {
                     return SignatureReport(schemes, false, false, "中央目录前没有 APK Signing Block：只有 v1（jar）签名或未签名")
                 }
+                // sizeOfBlock（尾 size 字段，@cdOffset-24）= pairs 段长、尾size(8)、magic(16) 三者相加
+                // pairs 段起点 = cdOffset - sizeOfBlock（同时是头 size 字段的下一字节）
                 val sizeOfBlock = le64At(raf, cdOffset - 24)
-                val blockStart = cdOffset - sizeOfBlock - 8
-                val pairSeqStart = blockStart + 8
-                val pairSeqEnd = cdOffset - 24
-                var p = pairSeqStart
-                while (p + 12 <= pairSeqEnd) {
+                val pairsStart = cdOffset - sizeOfBlock
+                val pairsEnd = cdOffset - 24
+                var p = pairsStart
+                while (p + 12 <= pairsEnd) {
+                    // pair = uint64 长度（含 id 4B 与 value）+ uint32 id + value
                     val pairLen = le64At(raf, p)
                     val id = le32At(raf, p + 8)
                     val bodyStart = p + 12
@@ -65,7 +67,7 @@ object ApkSignature {
                         V2_ID -> parseScheme(raf, bodyStart, bodyLen, "v2")?.let { schemes += it }
                         V3_ID -> parseScheme(raf, bodyStart, bodyLen, "v3")?.let { schemes += it }
                     }
-                    p = bodyStart + bodyLen
+                    p += 8 + pairLen
                 }
             }
         } catch (e: Exception) {
@@ -84,10 +86,12 @@ object ApkSignature {
         val signedLen = le32(buf, p)
         val signedEnd = p + 4 + signedLen
         p += 4
-        // signed data 内：lengthPrefixed(digests) → lengthPrefixed(certificates) → ...
+        // signed data 内：先 lengthPrefixed(digests) 再 lengthPrefixed(certificates)
+        if (p + 4 > buf.size) return null
         val digestsLen = le32(buf, p); p += 4 + digestsLen
+        if (p + 4 > buf.size) return null
         val certsLen = le32(buf, p); p += 4
-        val certsEnd = p + certsLen
+        val certsEnd = minOf(p + certsLen, buf.size)
         val certFactory = CertificateFactory.getInstance("X509")
         var first: X509Certificate? = null
         var count = 0

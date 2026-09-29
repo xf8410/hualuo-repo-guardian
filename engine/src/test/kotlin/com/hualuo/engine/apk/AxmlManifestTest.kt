@@ -17,8 +17,10 @@ class AxmlManifestTest {
         val dataBuf = java.io.ByteArrayOutputStream()
         val offsets = ArrayList<Int>()
         for (s in strings) {
+            require(s.length < 128) { "测试串用短串（变长前缀 <0x80 各 1 字节）" }
             offsets += dataBuf.size()
-            dataBuf.write(s.length)     // u8len（短串 1 字节）
+            dataBuf.write(s.length)     // u16len（变长，短串 1 字节）
+            dataBuf.write(s.length)     // u8len（变长，短串 1 字节）
             dataBuf.write(s.toByteArray(Charsets.UTF_8))
             dataBuf.write(0)
         }
@@ -40,19 +42,19 @@ class AxmlManifestTest {
         // manifest StartTag：attr = ns,name,rawValue + typedValue{size=8,res0=0,type,data}
         val manifestIdx = 0
         val androidNsIdx = 4
-        fun attr(nameIdx: Int, rawIdx: Int, type: Int, data: Int): ByteArray {
+        fun attr(nameIdx: Int, rawIdx: Int, type: Int, data: Int, hasAndroidNs: Boolean = true): ByteArray {
             val o = java.io.ByteArrayOutputStream()
-            o.write(le32(if (nameIdx == 0) -1 else androidNsIdx)) // package 属性无 ns
+            o.write(le32(if (hasAndroidNs) androidNsIdx else -1))
             o.write(le32(nameIdx))
             o.write(le32(rawIdx))
-            o.write(le32(8))            // typed value size
+            o.write(le16(8))            // typed value size（2 字节，attr 总长 20）
             o.write(0)                  // res0
-            o.write(type)
+            o.write(type)               // type（1 字节）
             o.write(le32(data))
             return o.toByteArray()
         }
         val attrs = listOf(
-            attr(1, 5, 0x03, 5),        // package raw="com.example.test"（无 ns）
+            attr(1, 5, 0x03, 5, hasAndroidNs = false), // package raw="com.example.test"（无 ns）
             attr(2, -1, 0x10, 26),      // android:versionCode INT_DEC=26
             attr(3, -1, 0x03, 6),       // android:versionName "1.2.3"
         )
@@ -64,6 +66,7 @@ class AxmlManifestTest {
         tag.write(le32(-1)); tag.write(le32(manifestIdx))          // ns, name
         tag.write(le16(20)); tag.write(le16(20)); tag.write(le16(attrs.size)) // attrStart/Size/Count
         tag.write(le16(0)); tag.write(le16(0))                     // id/style index
+        tag.write(le16(0))                                          // 对齐到 attrStart=20（attrExt 18B + 2B）
         attrs.forEach { tag.write(it) }
 
         val xmlHeader = java.io.ByteArrayOutputStream()

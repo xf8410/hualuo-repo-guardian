@@ -6,7 +6,7 @@ import java.io.InputStream
  * AXML（Android 二进制 XML）manifest 解析（560 清单 151-153）：从 APK 的
  * AndroidManifest.xml（二进制）抽 包名 / versionName / versionCode / compileSdk。
  *
- * 做法：顺序扫 chunk（StringPool → StartTag），只认账不改写；乱格式如实报错
+ * 做法：顺序扫 chunk（先 StringPool 后 StartTag），只认账不改写；乱格式如实报错
  * 不猜（解析器版本进了 Artifact 语义，解析结果必须可信）。
  * 纯 JVM 可测（测试里手拼 AXML 字节，不依赖 Android 运行时）。
  */
@@ -48,7 +48,8 @@ object AxmlManifest {
             chunkCount++
             when (type) {
                 RES_STRING_POOL_TYPE -> strings = parseStringPool(bytes, off)
-                RES_XML_TYPE -> Unit // 文件头，跳过
+                // 文件头：size 字段是全文件长，不是本块长——只跳 headerSize 继续扫子块
+                RES_XML_TYPE -> { off += headerSize; continue }
                 RES_XML_START_ELEMENT_TYPE -> {
                     if (pkg == null) {
                         val nsIdx = le32(bytes, off + headerSize)          // attrExt.ns
@@ -151,9 +152,9 @@ object AxmlManifest {
         }
 
     private fun le16(b: ByteArray, p: Int): Int =
-        ((b[p].toInt() and 0xFF) or ((b.getOrNull(p + 1)?.toInt() ?: 0 and 0xFF) and 0xFF) shl 8)
+        (b[p].toInt() and 0xFF) or (((b.getOrNull(p + 1)?.toInt() ?: 0) and 0xFF) shl 8)
 
     private fun le32(b: ByteArray, p: Int): Int =
-        (b[p].toInt() and 0xFF) or ((b.getOrNull(p + 1)?.toInt() ?: 0 and 0xFF) shl 8) or
-            ((b.getOrNull(p + 2)?.toInt() ?: 0 and 0xFF) shl 16) or ((b.getOrNull(p + 3)?.toInt() ?: 0 and 0xFF) shl 24)
+        (b[p].toInt() and 0xFF) or (((b.getOrNull(p + 1)?.toInt() ?: 0) and 0xFF) shl 8) or
+            (((b.getOrNull(p + 2)?.toInt() ?: 0) and 0xFF) shl 16) or (((b.getOrNull(p + 3)?.toInt() ?: 0) and 0xFF) shl 24)
 }
