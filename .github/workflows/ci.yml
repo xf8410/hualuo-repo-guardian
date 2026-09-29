@@ -260,4 +260,5 @@ jobs:
         with:
           name: 自检日志-${{ github.run_id }}-${{ github.sha }}
           path: 日志/
-          retention-days: 90
+          # 500MB 免费配额教训（#301 配额满挂收日志步）：日志留 3 天足够回看
+          retention-days: 3
