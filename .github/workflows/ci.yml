@@ -30,6 +30,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
   pull_request:
 
 # contents:write 只为「密钥首铸」的回推；其余一切照旧只读。
