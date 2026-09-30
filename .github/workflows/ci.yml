@@ -1,4 +1,5 @@
 name: 自检（每次提交都跑）
+run-name: "自检 #${{ github.run_number }} — ${{ github.event.head_commit.message || github.event_name }}"
 
 # 这个 CI 的定位：先证明"没犯错"，再证明"能打包"。
 # 铁规：任何步骤都不许写 continue-on-error —— 旧 Agora 三步全开了这个开关，
