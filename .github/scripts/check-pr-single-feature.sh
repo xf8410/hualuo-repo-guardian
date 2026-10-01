@@ -18,7 +18,7 @@ last_msg=$(git log -1 --format='%s' 2>/dev/null || echo "")
 if [ -z "$last_msg" ]; then
   echo "⚠️  没有 commit，跳过"
 else
-  if ! echo "$last_msg" | grep -qE '^(feat|fix|refactor|perf|test|docs|ci|chore)\([a-z]+\):'; then
+  if ! echo "$last_msg" | grep -qE '^(feat|fix|refactor|perf|test|docs|style|build|ci|chore|revert)\([a-z]+\):'; then
     echo "❌ commit message 不符合 Conventional Commits："
     echo "   '$last_msg'"
     echo "   要求：feat(<scope>): xxx / fix(<scope>): xxx / ci(<scope>): xxx"
