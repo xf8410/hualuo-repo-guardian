@@ -2,7 +2,10 @@
 # check-no-fake-green.sh —— 红线五：禁止假绿机制
 # CI 跑本脚本，确保 .github/workflows/ 下没有 continue-on-error / tail 截断 / || true / set +e 等假绿机制。
 #
-# 实现要点：用 awk 跳过 yaml 字符串内的内容（避免 run-name 字符串里的 || 被误判）。
+# 实现要点：
+#   1. 用 awk 跳过 yaml 字符串内的内容（避免 run-name 字符串里的 || 被误判）
+#   2. 跳过 yaml 注释行（以 # 开头，跳过空白后的 # 也算）
+#   3. 跳过 bash 注释行（在 # 后面的内容不算代码）
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -13,12 +16,17 @@ echo
 
 errors=0
 
-# 提取 yaml 文件里"不在字符串内"的代码行（避免 yaml 字符串里的 || 被误判）
+# 提取 yaml 文件里"不在字符串内、不在注释里"的代码行
 get_code_lines() {
   awk '
     BEGIN { in_str = 0 }
     {
       line = $0
+      # 整行注释直接跳过（yaml 注释是 # 开头，前面可有空白）
+      stripped = line
+      sub(/^[[:space:]]+/, "", stripped)
+      if (substr(stripped, 1, 1) == "#") next
+
       out = ""
       while (length(line) > 0) {
         if (in_str) {
@@ -36,7 +44,13 @@ get_code_lines() {
       }
       n = split(out, parts, "\n")
       for (i = 1; i <= n; i++) {
-        if (length(parts[i]) > 0) print FILENAME ":" NR ":" parts[i]
+        if (length(parts[i]) > 0) {
+          # 再去掉行内 # 后面的注释
+          sub_part = parts[i]
+          hash_idx = index(sub_part, "#")
+          if (hash_idx > 0) sub_part = substr(sub_part, 1, hash_idx - 1)
+          if (length(sub_part) > 0) print FILENAME ":" NR ":" sub_part
+        }
       }
     }
   ' "$@"
