@@ -1,63 +1,82 @@
 #!/usr/bin/env bash
 # check-no-fake-green.sh —— 红线五：禁止假绿机制
-# CI 跑本脚本，确保 .github/workflows/ 下没有 continue-on-error / tail 截断 / || true / set +e / if: always 隐藏失败等假绿机制。
+# CI 跑本脚本，确保 .github/workflows/ 下没有 continue-on-error / tail 截断 / || true / set +e 等假绿机制。
+#
+# 实现要点：用 awk 跳过 yaml 字符串内的内容（避免 run-name 字符串里的 || 被误判）。
 
 set -uo pipefail
-
 cd "$(git rev-parse --show-toplevel)"
 
 echo "为什么查：CI '假绿' = run 整体绿勾，但内部某步其实失败了。"
-echo "挡的机制：continue-on-error / tail-n 截断 / || true / set +e / if: always 隐藏失败"
+echo "挡的机制：continue-on-error / tail-n 截断 / || true / set +e"
 echo
 
 errors=0
 
+# 提取 yaml 文件里"不在字符串内"的代码行（避免 yaml 字符串里的 || 被误判）
+get_code_lines() {
+  awk '
+    BEGIN { in_str = 0 }
+    {
+      line = $0
+      out = ""
+      while (length(line) > 0) {
+        if (in_str) {
+          ci = index(line, "\"")
+          if (ci == 0) { line = ""; break }
+          line = substr(line, ci + 1)
+          in_str = 0
+        } else {
+          oi = index(line, "\"")
+          if (oi == 0) { out = out line "\n"; line = ""; break }
+          out = out substr(line, 1, oi - 1) "\n"
+          line = substr(line, oi + 1)
+          in_str = 1
+        }
+      }
+      n = split(out, parts, "\n")
+      for (i = 1; i <= n; i++) {
+        if (length(parts[i]) > 0) print FILENAME ":" NR ":" parts[i]
+      }
+    }
+  ' "$@"
+}
+
 # 1. continue-on-error：只允许 upload-artifact 用
-echo "[检查 1/5] continue-on-error 仅允许 upload-artifact..."
-bad=$(grep -RIn 'continue-on-error' .github/workflows/ 2>/dev/null | \
-  grep -v 'actions/upload-artifact' | \
-  grep -v '^[^:]*:[^:]*:[[:space:]]*#' || true)
+echo "[检查 1/4] continue-on-error 仅允许 upload-artifact..."
+bad=$(get_code_lines .github/workflows/*.yml | grep 'continue-on-error' | grep -v 'actions/upload-artifact' || true)
 if [ -n "$bad" ]; then
   echo "❌ 以下行有 continue-on-error（不允许）："
   printf '%s\n' "$bad"
   errors=$((errors + 1))
 fi
 
-# 2. tail -n 截断
-echo "[检查 2/5] 禁止 tail -n 截断日志..."
-bad=$(grep -RIn -E '(^|[^a-z])tail[[:space:]]+-[a-zA-Z]*n[[:space:]]+[0-9]+|(^|[^a-z])head[[:space:]]+-[a-zA-Z]*n[[:space:]]+[0-9]+' .github/workflows/ 2>/dev/null || true)
+# 2. tail -n / head -n 截断（只在代码里查）
+echo "[检查 2/4] 禁止 tail -n / head -n 截断日志..."
+bad=$(get_code_lines .github/workflows/*.yml | grep -E '(^|[^a-z])(tail|head)[[:space:]]+-[a-zA-Z]*n[[:space:]]+[0-9]+' || true)
 if [ -n "$bad" ]; then
   echo "❌ 以下行有 tail/head -n 截断（不允许）："
   printf '%s\n' "$bad"
   errors=$((errors + 1))
 fi
 
-# 3. || true 吞错（仅在 # 注释里允许）
-echo "[检查 3/5] 禁止 || true 吞错误..."
-bad=$(grep -RIn -E '||[[:space:]]*true' .github/workflows/ 2>/dev/null | \
-  grep -v '^[^:]*:[^:]*:[[:space:]]*#' || true)
+# 3. || true（只在 bash 代码里查，且 true 后必须接空白/行尾/;&|）
+echo "[检查 3/4] 禁止 || true 吞错误..."
+bad=$(get_code_lines .github/workflows/*.yml | grep -E '\|\|[[:space:]]+true([[:space:]]*$|[[:space:]]*[;&|])' || true)
 if [ -n "$bad" ]; then
   echo "❌ 以下行有 || true（不允许）："
   printf '%s\n' "$bad"
   errors=$((errors + 1))
 fi
 
-# 4. set +e 关错误检查
-echo "[检查 4/5] 禁止 set +e..."
-bad=$(grep -RIn -E 'set[[:space:]]+\+e|set[[:space:]]+\+o[[:space:]]+pipefail' .github/workflows/ 2>/dev/null || true)
+# 4. set +e / set +o pipefail
+echo "[检查 4/4] 禁止 set +e / set +o pipefail..."
+bad=$(get_code_lines .github/workflows/*.yml | grep -E 'set[[:space:]]+\+e([[:space:]]|$)|set[[:space:]]+\+o[[:space:]]+pipefail' || true)
 if [ -n "$bad" ]; then
   echo "❌ 以下行有 set +e / set +o pipefail（不允许）："
   printf '%s\n' "$bad"
   errors=$((errors + 1))
 fi
-
-# 5. if: always() 必须在同一 step 配 if: failure() 显式暴露失败
-echo "[检查 5/5] if: always() 必须配 if: failure()..."
-# 这条比较宽松——只检查 upload-artifact 步骤
-always_steps=$(grep -RIn -B1 -A2 'if: always' .github/workflows/ 2>/dev/null | \
-  grep -E 'name:' | head -5 || true)
-# 简单判断：如果一个 step 有 if: always，必须在同一 jobs 下有 if: failure()
-# 完整检查放在 ci.yml 的"红线五"step 里人工 review（更安全）
 
 if [ "$errors" -gt 0 ]; then
   echo
