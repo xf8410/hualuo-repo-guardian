@@ -190,6 +190,15 @@ jobs:
           fi
           echo "一致：全项目只有 version.properties 一处。"
 
+      - name: 红线五 · 禁止假绿机制
+        run: bash .github/scripts/check-no-fake-green.sh
+
+      - name: 红线六 · PR 必须单功能（本地检查 commit message）
+        run: bash .github/scripts/check-pr-single-feature.sh
+
+      - name: 红线七 · artifact 不嵌 zip（构建前查 workflow 自己）
+        run: bash .github/scripts/check-artifact-no-zip-in-zip.sh
+
       - name: 跑引擎测试（纯逻辑，不用手机；--rerun-tasks 禁缓存保真实+逐测试XML入档）
         run: |
           set -o pipefail

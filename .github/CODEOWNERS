@@ -1,0 +1,24 @@
+# CODEOWNERS — 锁死 CI/release 配置文件
+# AI 不许改这里列出的任何文件——任何修改必须 owner 审批。
+
+# 默认 owner 是花落本人
+*       @xf8410
+
+# CI/workflow 文件——AI 改了等于改守门规则，必须 owner 审批
+/.github/workflows/        @xf8410
+/.github/scripts/          @xf8410
+
+# 守门规则文档——AI 改了等于改规则，必须 owner 审批
+/docs/HARD-GATES.md        @xf8410
+/docs/LESSONS.md           @xf8410
+
+# 签名密钥——永不重铸
+/signing/                  @xf8410
+
+# 版本号来源——单点
+/version.properties        @xf8410
+
+# 工程根配置
+/build.gradle.kts          @xf8410
+/settings.gradle.kts       @xf8410
+/gradle.properties         @xf8410

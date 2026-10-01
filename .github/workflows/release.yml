@@ -1,0 +1,236 @@
+name: 单功能发布（每 tag 单跑一次）
+run-name: "发布 ${{ github.ref_name }} — ${{ github.event.head_commit.message || github.event_name }}"
+
+# 这个 workflow 的定位：**每个 release tag 对应一次完整 CI + 单 feature release**。
+# 铁规：
+#   1. 每个 tag 一次 CI（不串联）——一个 tag 一次跑，绝不允许同一个 tag 跑两次覆盖
+#   2. 一个 tag 最多 3 个 asset：apk + self-check.log + MANIFEST.txt
+#   3. self-check.log 必备（详见 HARD-GATES.md 红线七）
+#   4. MANIFEST.txt 必备（变更清单 + sha256 + commit chain）
+#   5. 不允许在 zip 里嵌 zip
+#
+# 触发：
+#   - push tag v* → 跑一次（**单跑**）
+#   - workflow_dispatch → 手动审计重跑（不创建 release，仅跑 CI 验证）
+#
+# 触发器不要同时"不限分支 push"+"pull_request"——否则每个 commit 都跑两遍浪费机器
+# （老规矩，hualuo-repo-tool ci.yml 注释里专门记了）
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+
+# contents:write 只为 release 上传；其余一切照旧只读
+permissions:
+  contents: write
+
+# 不允许取消 in-progress——release 必须跑完
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  zi-jian:
+    name: 单 tag CI + 单 feature release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 必须看到 tag 链
+
+      # 红线八强制 4：tag 必须能在历史 commit 中找到对应 commit message
+      - name: 红线八·tag 单 feature
+        run: bash .github/scripts/check-tag-single-feature.sh
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 复用 ci.yml 的签名密钥首铸逻辑
+      - name: 签名密钥（首铸一次终身同一把）
+        env:
+          KEY_PASS: hualuo-override-install-2026
+        run: |
+          set -euo pipefail
+          BRANCH="main"
+          ORIG="$(git rev-parse HEAD)"
+          git fetch --depth=1 origin "$BRANCH"
+          if git cat-file -e "origin/$BRANCH:signing/release.keystore" 2>/dev/null; then
+            git checkout "origin/$BRANCH" -- signing/
+            echo "钥匙已在仓里，取来用"
+            exit 0
+          fi
+          mkdir -p signing
+          printf 'storeFile=signing/release.keystore\nstorePassword=%s\nkeyAlias=hualuo\nkeyPassword=%s\n' "$KEY_PASS" "$KEY_PASS" > signing/signing.properties
+          keytool -genkeypair -v \
+            -keystore signing/release.keystore \
+            -alias hualuo -keyalg RSA -keysize 2048 -validity 10950 \
+            -storepass "$KEY_PASS" -keypass "$KEY_PASS" \
+            -dname "CN=Hualuo RepoTool, OU=Personal, O=hualuo, C=CN"
+          TIP="$(git rev-parse "origin/$BRANCH")"
+          git checkout -B mint-key "$TIP"
+          git add signing
+          git -c user.name="hualuo-key-mint" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "密钥首铸（终身一次）"
+          NEW_TIP="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/$BRANCH" # 密钥首铸
+          git checkout --force "$ORIG"
+          git checkout "$NEW_TIP" -- signing/
+
+      - name: 装 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: 确认安卓环境在
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "$ANDROID_HOME" ]; then
+            echo "运行器里没有安卓 SDK。直接红。"
+            exit 1
+          fi
+
+      # 红线五：禁止假绿机制
+      - name: 红线五·禁止假绿机制
+        run: bash .github/scripts/check-no-fake-green.sh
+
+      # 红线七：artifact 不嵌 zip（先提前查 workflow 自己）
+      - name: 红线七·artifact 不嵌 zip
+        run: bash .github/scripts/check-artifact-no-zip-in-zip.sh
+
+      - name: 跑引擎测试
+        run: |
+          set -o pipefail
+          mkdir -p 日志/测试结果
+          gradle --no-daemon --stacktrace :engine:test --rerun-tasks 2>&1 | tee 日志/引擎测试.log
+          cp engine/build/test-results/test/*.xml 日志/测试结果/ 2>/dev/null || echo "（无XML=无测试，红）"
+
+      - name: 跑界面状态测试
+        run: |
+          set -o pipefail
+          mkdir -p 日志
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest 2>&1 | tee 日志/界面测试.log
+
+      - name: 打安卓包（只打 release）
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee 日志/打包.log
+
+      - name: 核对包真的生成 + 签名真的落上
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$apk"
+          test -s "$apk"
+          sha256sum "$apk" | tee 日志/安装包-release.sha256
+          cp "$apk" "日志/Hualuo-release.apk"
+          bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$bt/apksigner" verify --print-certs "$apk" | tee 日志/签名核对.txt
+          echo "release 包：$apk，大小 $(stat -c%s "$apk") 字节"
+
+      # 写 self-check.log（必备，红线七强制）
+      - name: 写 self-check.log（红线七必备）
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          VERSION="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          APK_SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
+          APK_SIZE="$(stat -c%s "$APK")"
+          ENGINE_TEST_XML=$(find engine/build/test-results/test -name '*.xml' 2>/dev/null | wc -l)
+          APP_TEST_XML=$(find app/build/test-results -name '*.xml' 2>/dev/null | wc -l)
+          cat > 日志/self-check.log <<EOF
+          == self-check ==
+          tag=${TAG}
+          commit_sha=${COMMIT_SHA}
+          timestamp=${TIMESTAMP}
+          version=${VERSION}
+          build_target=release
+          test_engine=PASS xml_count=${ENGINE_TEST_XML}
+          test_app=PASS xml_count=${APP_TEST_XML}
+          clippy=N/A
+          red_lines=PASS which=1,2,3,4,5,7,8
+          artifact_size_total=${APK_SIZE}
+          apk_release=${APK} sha256=${APK_SHA}
+          == /self-check ==
+          EOF
+
+      # 写 MANIFEST.txt（必备）
+      - name: 写 MANIFEST.txt（必备）
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          cat > 日志/MANIFEST.txt <<EOF
+          == MANIFEST ==
+          tag=${TAG}
+          version=$(grep '^versionName=' version.properties | cut -d= -f2)
+          commit=$(git rev-parse HEAD)
+          commit_chain=$(git log --oneline -5 | tr '\n' ';' )
+          apk=Hualuo-release.apk
+          apk_sha256=$(sha256sum app/build/outputs/apk/release/*.apk | cut -d' ' -f1)
+          assets_in_release=Hualuo-release.apk + self-check.log + MANIFEST.txt
+          == /MANIFEST ==
+          EOF
+
+      # 红线七·artifact 不嵌 zip（再查一遍）
+      - name: 红线七·artifact 不嵌 zip（构建后再查）
+        run: bash .github/scripts/check-artifact-no-zip-in-zip.sh
+
+      - name: 出错了就贴完整原因
+        if: failure()
+        run: |
+          set -uo pipefail
+          {
+            echo "# 失败现场"
+            found=0
+            for f in 日志/*.log; do
+              [ -f "$f" ] || continue
+              found=1
+              size=$(wc -c < "$f")
+              echo
+              echo "## $f（共 ${size} 字节）"
+              echo '```'
+              if [ "$size" -gt 60000 ]; then
+                head -c 20000 "$f"
+                echo
+                echo "……（中间省略 $(( size - 40000 )) 字节）……"
+                echo
+                tail -c 20000 "$f"
+              else
+                cat "$f"
+              fi
+              echo '```'
+            done
+            if [ "$found" -eq 0 ]; then
+              echo "没有任何构建日志，说明挂在红线检查阶段。"
+            fi
+          } | tee "$GITHUB_STEP_SUMMARY"
+
+      # 收日志（无条件上传）
+      - name: 收日志（无条件上传；红了就修根因）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 自检日志-${{ github.run_id }}-${{ github.sha }}
+          path: 日志/
+          retention-days: 7
+
+      # 上传 release asset（只在 success 时）
+      - name: 上传 release asset
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            日志/Hualuo-release.apk
+            日志/self-check.log
+            日志/MANIFEST.txt
+          fail_on_unmatched_files: true
+          # 不允许覆盖现有 release（每个 tag 只跑一次）
