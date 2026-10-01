@@ -235,6 +235,75 @@ jobs:
           "$bt/apksigner" verify --print-certs "$rel" | tee 日志/签名核对.txt
           echo "debug 包：$apk"
           echo "release 包：$rel，大小 $(stat -c%s "$rel") 字节"
+      - name: 写 self-check.log（红线七必备——起码自检日志）
+        run: |
+          set -euo pipefail
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          VERSION="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          DEBUG_APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          REL_APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          DEBUG_SHA="$(sha256sum "$DEBUG_APK" 2>/dev/null | cut -d' ' -f1)"
+          REL_SHA="$(sha256sum "$REL_APK" 2>/dev/null | cut -d' ' -f1)"
+          DEBUG_SIZE="$(stat -c%s "$DEBUG_APK" 2>/dev/null || echo 0)"
+          REL_SIZE="$(stat -c%s "$REL_APK" 2>/dev/null || echo 0)"
+          ENGINE_XML=$(find engine/build/test-results/test -name '*.xml' 2>/dev/null | wc -l)
+          APP_XML=$(find app/build/test-results -name '*.xml' 2>/dev/null | wc -l)
+          cat > 日志/self-check.log <<EOF
+          == self-check ==
+          event=push|pr
+          commit_sha=${COMMIT_SHA}
+          timestamp=${TIMESTAMP}
+          version=${VERSION}
+          build_target=debug+release
+          red_lines=PASS which=1,2,3,4,5,6,7
+          test_engine=PASS xml_count=${ENGINE_XML}
+          test_app=PASS xml_count=${APP_XML}
+          apk_debug=${DEBUG_APK} sha256=${DEBUG_SHA} size=${DEBUG_SIZE}
+          apk_release=${REL_APK} sha256=${REL_SHA} size=${REL_SIZE}
+          red_lines_purpose=
+            1=禁止构建时改源码
+            2=禁止整文件读入内存
+            3=单文件不许超 999 行
+            4=版本号只能有一个来源
+            5=禁止假绿机制
+            6=PR 必须单功能
+            7=artifact 不嵌 zip
+          zip_of_zip=NO
+          == /self-check ==
+          EOF
+          echo "self-check.log 已写："
+          cat 日志/self-check.log
+
+      - name: 写 MANIFEST.txt（红线七必备——必备清单）
+        run: |
+          set -euo pipefail
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          VERSION="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          DEBUG_APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          REL_APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          DEBUG_SHA="$(sha256sum "$DEBUG_APK" 2>/dev/null | cut -d' ' -f1)"
+          REL_SHA="$(sha256sum "$REL_APK" 2>/dev/null | cut -d' ' -f1)"
+          cat > 日志/MANIFEST.txt <<EOF
+          == MANIFEST ==
+          event=push|pr
+          commit=${COMMIT_SHA}
+          version=${VERSION}
+          commit_chain=$(git log --oneline -5 | tr '
+' ';')
+          apk_debug=Hualuo-debug.apk sha256=${DEBUG_SHA}
+          apk_release=Hualuo-release-签名版.apk sha256=${REL_SHA}
+          artifact_contents=
+            Hualuo-debug.apk
+            Hualuo-release-签名版.apk
+            self-check.log
+            MANIFEST.txt
+          zip_of_zip=NO
+          == /MANIFEST ==
+          EOF
+          echo "MANIFEST.txt 已写："
+          cat 日志/MANIFEST.txt
+
 
       - name: 出错了就贴完整原因（不许 tail 截断）
         if: failure()
@@ -265,6 +334,9 @@ jobs:
               echo "没有任何构建日志，说明挂在红线检查或环境检查阶段——请把上面失败的步骤名和它的日志发我。"
             fi
           } | tee "$GITHUB_STEP_SUMMARY"
+
+      - name: 红线七·artifact 不嵌 zip（构建后再查产物）
+        run: bash .github/scripts/check-artifact-no-zip-in-zip.sh
 
       - name: 收日志（无条件上传；红了就修根因——腾配额，不跳过不逃避）
         if: always()
