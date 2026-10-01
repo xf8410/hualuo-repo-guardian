@@ -289,7 +289,7 @@ jobs:
           event=push|pr
           commit=${COMMIT_SHA}
           version=${VERSION}
-          commit_chain=$(git log --oneline -5 | tr '\n' ';') || true
+          commit_chain=$(git log --oneline -5 | tr '\n' ';')
           apk_debug=Hualuo-debug.apk sha256=${DEBUG_SHA}
           apk_release=Hualuo-release-签名版.apk sha256=${REL_SHA}
           artifact_contents=
